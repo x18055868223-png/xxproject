@@ -1774,8 +1774,17 @@ def test_shadow_tracking_prepare_deal_debounce_classifications_and_dual_cases(tm
         assert r_ping["discovery_capture_state"] == "COMPLETE"
         assert set(r_ping["candidate_sides"]) == {"put", "call"}
 
-        # 5. Bounded 20s refresh debounce: within 20s of prior prepare_deal refresh, repeated allow_refresh=True will NOT hammer
+        # 5. State-driven idempotency without 20s blind suppression:
+        #    (a) Repeated allow_refresh=True when already SOURCE_READY does NOT hammer Deribit;
+        #    (b) If view becomes incomplete/pre-slot 5s later (cooldown=0), prepare_deal recovers immediately without 20s stall.
         clock[0] += 5_000
+        wires_before_idemp = len(wire_log)
+        r_idemp = service("prepare_deal", {"target_expiry_ms": expiry, "slot_ms": slot, "allow_refresh": True})
+        assert r_idemp["readiness_status"] == "SOURCE_READY"
+        assert r_idemp["refreshed"] is False
+        assert r_idemp["refresh_debounced"] is False
+        assert len(wire_log) == wires_before_idemp
+
         with wb._view_lock:
             wb._current_view["discovery_status"]["capture_state"] = "PARTIAL"
             wb._current_view["candidates"][1] = {
@@ -1783,12 +1792,10 @@ def test_shadow_tracking_prepare_deal_debounce_classifications_and_dual_cases(tm
                 "live_lock_eligible": False, "review_gate": {"reasons": ["delta_population_capture_incomplete"]},
                 "discovery_status": {"capture_state": "PARTIAL", "delta_population": {"complete": False, "verified_eligible": 0}},
             }
-        wires_before_debounce = len(wire_log)
-        r_deb = service("prepare_deal", {"target_expiry_ms": expiry, "slot_ms": slot, "allow_refresh": True})
-        assert r_deb["readiness_status"] == "DISCOVERY_INCOMPLETE"
-        assert r_deb["refreshed"] is False
-        assert r_deb["refresh_debounced"] is True
-        assert len(wire_log) == wires_before_debounce
+        r_rec_imm = service("prepare_deal", {"target_expiry_ms": expiry, "slot_ms": slot, "allow_refresh": True})
+        assert r_rec_imm["readiness_status"] == "SOURCE_READY"
+        assert r_rec_imm["refreshed"] is True
+        assert r_rec_imm["refresh_debounced"] is False
 
         # Advance past 20s debounce + 300s discovery TTL -> Market single-side (all Call deltas > 0.50 max, complete=True, verified_eligible=0)
         clock[0] += 305_000

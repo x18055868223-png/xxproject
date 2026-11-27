@@ -7,7 +7,10 @@ across spot active micro-flow, live 5m Pin/ARD structure, and realized volatilit
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import hashlib
+import json
 import math
+import re
 from typing import Any
 
 SCHEMA = "evidence_qual@1"
@@ -749,4 +752,208 @@ def summarize_channel_capabilities(
         "blind_channels": blind,
         "degraded_channels": degraded,
         "all_critical_operational": len(blind) == 0,
+    }
+
+
+DEFAULT_DEAL_QUOTE_HOLD_MS = 180_000
+DEFAULT_DEAL_PAIR_SKEW_MS = 60_000
+DEFAULT_DEAL_L3_MAX_AGE_MS = 5 * 60_000
+_CASE_ID_RE = re.compile(r"^cf_[A-Za-z0-9_-]+$")
+
+
+def canonical_case_content_sha256(case: Mapping[str, Any]) -> str:
+    body = {k: v for k, v in case.items() if k != "build"}
+    encoded = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _case_layer_raw(case: Mapping[str, Any], ref: str) -> Mapping[str, Any] | None:
+    at = (case.get("refs") or {}).get(ref)
+    if not isinstance(at, Mapping):
+        return None
+    try:
+        entry = case["layers"][at["layer"]][at["index"]]
+    except (KeyError, IndexError, TypeError):
+        return None
+    return entry if isinstance(entry, Mapping) else None
+
+
+def _case_layer_values(case: Mapping[str, Any], ref: str) -> Mapping[str, Any] | None:
+    entry = _case_layer_raw(case, ref)
+    vals = entry.get("values") if isinstance(entry, Mapping) else None
+    return vals if isinstance(vals, Mapping) else None
+
+
+def qualify_deal_case_pair(
+    put_case: Mapping[str, Any] | None,
+    call_case: Mapping[str, Any] | None,
+    *,
+    target_expiry_ms: int | None = None,
+    now_ms: int | None = None,
+    slot_ms: int | None = None,
+    require_in_slot: bool = True,
+    require_live_fresh: bool = True,
+    require_content_sha256: bool = True,
+    require_l3: bool = True,
+    min_valuation_at_slot: bool = False,
+    input_profile: str | None = "p0_strict@1",
+    quote_hold_ms: int = DEFAULT_DEAL_QUOTE_HOLD_MS,
+    max_pair_skew_ms: int = DEFAULT_DEAL_PAIR_SKEW_MS,
+    max_l3_age_ms: int = DEFAULT_DEAL_L3_MAX_AGE_MS,
+) -> dict[str, Any]:
+    """Single-source qualification of a target-expiry Put/Call native case pair."""
+    if not isinstance(put_case, Mapping) or not isinstance(call_case, Mapping):
+        return {
+            "ok": False,
+            "reason_codes": ["missing_case_pair"],
+            "error": "cases_by_side must contain both 'put' and 'call' case mappings",
+        }
+    if target_expiry_ms is not None and not is_clock(target_expiry_ms):
+        return {"ok": False, "reason_codes": ["invalid_target_expiry_ms"], "error": "target_expiry_ms must be a positive integer"}
+    if slot_ms is not None and not is_clock(slot_ms):
+        return {"ok": False, "reason_codes": ["invalid_slot_ms"], "error": "slot_ms must be a positive integer"}
+    if now_ms is not None and not is_clock(now_ms):
+        return {"ok": False, "reason_codes": ["invalid_now_ms"], "error": "now_ms must be a positive integer"}
+
+    built_by_side: dict[str, int] = {}
+    val_ts_by_side: dict[str, int] = {}
+    contracts_by_side: dict[str, Mapping[str, Any]] = {}
+    val_floor_ms = (
+        (slot_ms if min_valuation_at_slot else (slot_ms - quote_hold_ms))
+        if (require_in_slot and slot_ms is not None)
+        else None
+    )
+
+    for side, case in (("put", put_case), ("call", call_case)):
+        case_id = case.get("case_id")
+        if not isinstance(case_id, str) or not _CASE_ID_RE.match(case_id):
+            return {"ok": False, "reason_codes": [f"{side}_invalid_case_id"], "error": f"invalid {side} case_id"}
+        build = case.get("build")
+        if not isinstance(build, Mapping):
+            return {"ok": False, "reason_codes": [f"{side}_missing_build"], "error": f"missing {side} build metadata"}
+        built_ms = build.get("built_at_ms")
+        if (
+            not is_clock(built_ms)
+            or (now_ms is not None and built_ms > now_ms)
+            or (require_in_slot and slot_ms is not None and built_ms < slot_ms)
+        ):
+            return {
+                "ok": False,
+                "reason_codes": [f"{side}_built_outside_window"],
+                "error": f"{side} built_at_ms outside [slot_ms, now_ms]",
+            }
+        content_sha = build.get("content_sha256")
+        if require_content_sha256 or content_sha is not None:
+            if not isinstance(content_sha, str) or content_sha != canonical_case_content_sha256(case):
+                return {
+                    "ok": False,
+                    "reason_codes": [f"{side}_content_sha256_mismatch"],
+                    "error": f"{side} content_sha256 mismatch",
+                }
+        asof_ms = case.get("asof_ms")
+        if require_content_sha256 or asof_ms is not None:
+            if (
+                not is_clock(asof_ms)
+                or not (0 <= (built_ms - asof_ms) <= quote_hold_ms)
+                or (val_floor_ms is not None and asof_ms < val_floor_ms)
+                or (require_live_fresh and now_ms is not None and (now_ms - asof_ms) > quote_hold_ms)
+            ):
+                return {
+                    "ok": False,
+                    "reason_codes": [f"{side}_asof_stale_or_outside_slot"],
+                    "error": f"{side} asof_ms stale (>180s) or outside slot window",
+                }
+        contract = _case_layer_values(case, "L1.contract")
+        if not isinstance(contract, Mapping):
+            return {"ok": False, "reason_codes": [f"{side}_missing_contract"], "error": f"missing {side} L1.contract"}
+        if contract.get("side") != side:
+            return {"ok": False, "reason_codes": [f"{side}_side_mismatch"], "error": f"{side} L1.contract side mismatch"}
+        c_exp = contract.get("expiry_ms")
+        if not is_clock(c_exp) or (target_expiry_ms is not None and c_exp != target_expiry_ms):
+            return {"ok": False, "reason_codes": [f"{side}_expiry_mismatch"], "error": f"{side} L1.contract expiry_ms mismatch"}
+        if not clean_text(contract.get("short_instrument")) or not clean_text(contract.get("long_instrument")):
+            return {"ok": False, "reason_codes": [f"{side}_missing_instruments"], "error": f"missing {side} contract instruments"}
+
+        quote = _case_layer_values(case, "L2.quote")
+        if not isinstance(quote, Mapping):
+            return {"ok": False, "reason_codes": [f"{side}_missing_quote"], "error": f"missing {side} L2.quote"}
+        q_credit = finite_num(quote.get("credit_btc"))
+        if q_credit is None or q_credit <= 0:
+            return {
+                "ok": False,
+                "reason_codes": [f"{side}_missing_positive_credit"],
+                "error": f"{side} L2.quote missing positive credit_btc",
+            }
+        if (quote.get("gap_reasons") or []) or (quote.get("quote_gap_reasons") or []):
+            return {"ok": False, "reason_codes": [f"{side}_quote_gaps"], "error": f"{side} L2.quote contains gap_reasons"}
+        q_val_ts = quote.get("valuation_ts_ms")
+        if q_val_ts is None and not require_content_sha256:
+            q_val_ts = asof_ms
+        if (
+            not is_clock(q_val_ts)
+            or not (0 <= (built_ms - q_val_ts) <= quote_hold_ms)
+            or (val_floor_ms is not None and q_val_ts < val_floor_ms)
+            or (require_live_fresh and now_ms is not None and (now_ms - q_val_ts) > quote_hold_ms)
+        ):
+            return {
+                "ok": False,
+                "reason_codes": [f"{side}_valuation_stale_or_outside_slot"],
+                "error": f"{side} L2.quote valuation_ts_ms stale (>180s) or outside slot window",
+            }
+
+        if require_l3:
+            l3_raw = _case_layer_raw(case, "L3.expiry_walls")
+            l3_vals = l3_raw.get("values") if isinstance(l3_raw, Mapping) else None
+            l3_asof = l3_raw.get("asof_ms") if isinstance(l3_raw, Mapping) else None
+            l3_pin = (
+                finite_num((l3_vals.get("walls") or {}).get("pin"))
+                if isinstance(l3_vals, Mapping) and isinstance(l3_vals.get("walls"), Mapping)
+                else None
+            )
+            eff_exp = target_expiry_ms if target_expiry_ms is not None else c_exp
+            if (
+                not isinstance(l3_raw, Mapping)
+                or l3_raw.get("quality") in {"missing", "unknown", "stale"}
+                or not is_clock(l3_asof)
+                or not (0 <= (built_ms - l3_asof) <= max_l3_age_ms)
+                or not isinstance(l3_vals, Mapping)
+                or (eff_exp is not None and l3_vals.get("expiry_ms") != eff_exp)
+                or l3_vals.get("stale") is True
+                or l3_pin is None
+                or l3_pin <= 0
+            ):
+                return {
+                    "ok": False,
+                    "reason_codes": [f"{side}_l3_walls_missing_or_stale"],
+                    "error": f"{side} L3.expiry_walls missing or stale (>5m)",
+                }
+
+        if input_profile == "p0_strict@1":
+            l4_vals = _case_layer_values(case, "L4.expiry_vol")
+            rv_sub = l4_vals.get("realized_vol") if isinstance(l4_vals, Mapping) else None
+            if qualify_expiry_realized_vol(rv_sub, cutoff_ms=built_ms).get("status") != QUAL_ALIGNED:
+                return {
+                    "ok": False,
+                    "reason_codes": [f"{side}_l4_rv24_unaligned"],
+                    "error": f"{side} L4.expiry_vol realized_vol not aligned",
+                }
+
+        built_by_side[side] = built_ms
+        val_ts_by_side[side] = q_val_ts
+        contracts_by_side[side] = contract
+
+    if contracts_by_side["put"]["expiry_ms"] != contracts_by_side["call"]["expiry_ms"]:
+        return {"ok": False, "reason_codes": ["pair_expiry_mismatch"], "error": "pair L1.contract expiry_ms mismatch"}
+    if abs(built_by_side["put"] - built_by_side["call"]) > max_pair_skew_ms:
+        return {"ok": False, "reason_codes": ["pair_built_skew_exceeded"], "error": "pair built_at_ms skew exceeds 60s"}
+    if abs(val_ts_by_side["put"] - val_ts_by_side["call"]) > max_pair_skew_ms:
+        return {"ok": False, "reason_codes": ["pair_valuation_skew_exceeded"], "error": "pair valuation_ts_ms skew exceeds 60s"}
+
+    return {
+        "ok": True,
+        "reason_codes": [],
+        "error": None,
+        "built_by_side": built_by_side,
+        "valuation_ts_by_side": val_ts_by_side,
+        "contracts_by_side": contracts_by_side,
     }

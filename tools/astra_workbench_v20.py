@@ -1959,6 +1959,7 @@ class AstraWorkbench:
         self._delta_mem_cache: dict[str, dict[str, Any]] = {}
         self._shadow_quote_slots: dict[str, dict[str, Any]] = {}
         self._pending_lock_guard = threading.Lock()
+        self._prepare_deal_lock = threading.Lock()
         self._gate_since: tuple[str, int | None] | None = None  # (effective state, since ms)
         self._last_compaction: dict[str, Any] | None = None
         self._last_compaction_ms = 0
@@ -5014,10 +5015,14 @@ class AstraWorkbench:
             walls_dict = (walls_profile or {}).get("walls") if isinstance(walls_profile, Mapping) else {}
             pin_val = walls_dict.get("pin") if isinstance(walls_dict, Mapping) else None
             l3_computed = (walls_profile or {}).get("computed_at_ms") if isinstance(walls_profile, Mapping) else None
+            l3_age_ms = (
+                (now - l3_computed)
+                if (isinstance(l3_computed, int) and not isinstance(l3_computed, bool))
+                else None
+            )
             l3_age_ok = bool(
-                isinstance(l3_computed, int)
-                and not isinstance(l3_computed, bool)
-                and 0 <= (now - l3_computed) <= 270_000
+                l3_age_ms is not None
+                and 0 <= l3_age_ms <= evidence_qual.DEFAULT_DEAL_L3_MAX_AGE_MS
             )
             exp_move_val = (walls_profile or {}).get("expected_move_usd") if isinstance(walls_profile, Mapping) else None
             atm_iv_val = (walls_profile or {}).get("atm_iv_pct") if isinstance(walls_profile, Mapping) else None
@@ -5142,6 +5147,7 @@ class AstraWorkbench:
                     "l3_expiry_gamma": {
                         "ok": l3_walls_ok,
                         "pin": pin_val,
+                        "age_ms": l3_age_ms,
                         "stale": bool(not l3_age_ok or (walls_profile or {}).get("stale")) if isinstance(walls_profile, Mapping) else True,
                     },
                     "l4_realized_vol": {"ok": l4_rv_ok, "rv_24h_pct": rv_24h, "qual_status": rv_qual.get("status")},
@@ -5152,32 +5158,33 @@ class AstraWorkbench:
 
         state = _evaluate(self.clock_ms())
         refreshed = False
-        refresh_debounced = False
         if (
             allow_refresh
             and state["readiness_status"] not in {"SOURCE_READY", "MARKET_SINGLE_SIDE_ONLY"}
             and state["deribit_cooldown_remaining_ms"] == 0
         ):
-            now_ref = self.clock_ms()
-            last_ref = int(getattr(self, "_last_prepare_deal_refresh_ms", 0) or 0)
-            if last_ref <= 0 or (now_ref - last_ref) >= 20_000:
-                self._last_prepare_deal_refresh_ms = now_ref
-                if self.config.expiry_gamma_enabled:
-                    force_eg = bool(
-                        not state["channels"]["l3_expiry_gamma"]["ok"]
-                        or (effective_profile == "p0_strict@1" and not state["channels"]["l4_realized_vol"]["ok"])
-                    )
-                    try:
-                        self.refresh_expiry_gamma(now_ms=self.clock_ms(), force=force_eg)
-                    except Exception:
-                        pass
-                self.refresh(now_ms=self.clock_ms(), record_daily=False)
-                refreshed = True
+            with self._prepare_deal_lock:
                 state = _evaluate(self.clock_ms())
-            else:
-                refresh_debounced = True
+                if (
+                    state["readiness_status"] not in {"SOURCE_READY", "MARKET_SINGLE_SIDE_ONLY"}
+                    and state["deribit_cooldown_remaining_ms"] == 0
+                ):
+                    if self.config.expiry_gamma_enabled:
+                        l3_ch = state["channels"]["l3_expiry_gamma"]
+                        l3_age = l3_ch.get("age_ms")
+                        force_eg = bool(
+                            not l3_ch["ok"]
+                            or (effective_profile == "p0_strict@1" and not state["channels"]["l4_realized_vol"]["ok"])
+                            or (isinstance(l3_age, int) and l3_age > 240_000)
+                        )
+                        try:
+                            self.refresh_expiry_gamma(now_ms=self.clock_ms(), force=force_eg)
+                        except Exception:
+                            pass
+                    self.refresh(now_ms=self.clock_ms(), record_daily=False)
+                    refreshed = True
+                    state = _evaluate(self.clock_ms())
 
-        now_final = self.clock_ms()
         quote_hold_final = int(getattr(unsuitable, "QUOTE_HOLD_MS", 180_000))
         cases_out: dict[str, Any] | None = None
         put_side = state["sides"]["put"]
@@ -5190,51 +5197,6 @@ class AstraWorkbench:
             and (target_expiry_ms is None or (put_side["expiry_ms"] == target_expiry_ms and call_side["expiry_ms"] == target_expiry_ms))
         )
 
-        def _built_case_deal_ready(c_obj: Mapping[str, Any], b_ms: int) -> bool:
-            asof = c_obj.get("asof_ms")
-            if not isinstance(asof, int) or isinstance(asof, bool) or not (0 <= b_ms - asof <= quote_hold_final):
-                return False
-            if (now_final - asof) > quote_hold_final:
-                return False
-            if isinstance(slot_ms, int) and now_final >= slot_ms and asof < slot_ms:
-                return False
-            q_ref = (c_obj.get("refs") or {}).get("L2.quote")
-            q_entry = c_obj["layers"][q_ref["layer"]][q_ref["index"]] if isinstance(q_ref, Mapping) else {}
-            q_val = q_entry.get("values") if isinstance(q_entry, Mapping) else {}
-            if not isinstance(q_val, Mapping):
-                return False
-            q_c = q_val.get("credit_btc")
-            if not isinstance(q_c, (int, float)) or isinstance(q_c, bool) or not math.isfinite(float(q_c)) or float(q_c) <= 0:
-                return False
-            if (q_val.get("gap_reasons") or []) or (q_val.get("quote_gap_reasons") or []):
-                return False
-            l3_ref = (c_obj.get("refs") or {}).get("L3.expiry_walls")
-            l3_entry = c_obj["layers"][l3_ref["layer"]][l3_ref["index"]] if isinstance(l3_ref, Mapping) else {}
-            l3_asof = l3_entry.get("asof_ms") if isinstance(l3_entry, Mapping) else None
-            l3_val = l3_entry.get("values") if isinstance(l3_entry, Mapping) else None
-            l3_pin = (l3_val.get("walls") or {}).get("pin") if isinstance(l3_val, Mapping) and isinstance(l3_val.get("walls"), Mapping) else None
-            if (
-                not isinstance(l3_entry, Mapping)
-                or l3_entry.get("quality") in {"missing", "unknown", "stale"}
-                or not isinstance(l3_asof, int)
-                or isinstance(l3_asof, bool)
-                or not (0 <= (b_ms - l3_asof) <= 5 * 60_000)
-                or not isinstance(l3_val, Mapping)
-                or l3_val.get("stale") is True
-                or not isinstance(l3_pin, (int, float))
-                or isinstance(l3_pin, bool)
-                or l3_pin <= 0
-            ):
-                return False
-            if effective_profile == "p0_strict@1":
-                l4_ref = (c_obj.get("refs") or {}).get("L4.expiry_vol")
-                l4_entry = c_obj["layers"][l4_ref["layer"]][l4_ref["index"]] if isinstance(l4_ref, Mapping) else {}
-                l4_val = l4_entry.get("values") if isinstance(l4_entry, Mapping) else {}
-                rv_sub = l4_val.get("realized_vol") if isinstance(l4_val, Mapping) else None
-                if evidence_qual.qualify_expiry_realized_vol(rv_sub, cutoff_ms=b_ms).get("status") != evidence_qual.QUAL_ALIGNED:
-                    return False
-            return True
-
         if (
             state["readiness_status"] == "SOURCE_READY"
             and put_side["formal_evidence_eligible"]
@@ -5246,29 +5208,48 @@ class AstraWorkbench:
             try:
                 put_case = self.case_file(put_sid)
                 call_case = self.case_file(call_sid)
-                put_built = (put_case.get("build") or {}).get("built_at_ms")
-                call_built = (call_case.get("build") or {}).get("built_at_ms")
-                put_asof = put_case.get("asof_ms")
-                call_asof = call_case.get("asof_ms")
-                built_ok = (
-                    isinstance(put_built, int)
-                    and isinstance(call_built, int)
-                    and abs(put_built - call_built) <= 60_000
-                    and isinstance(put_asof, int)
-                    and isinstance(call_asof, int)
-                    and abs(put_asof - call_asof) <= 60_000
-                    and (
-                        not (isinstance(slot_ms, int) and now_final >= slot_ms)
-                        or (put_built >= slot_ms and call_built >= slot_ms)
-                    )
-                    and _built_case_deal_ready(put_case, put_built)
-                    and _built_case_deal_ready(call_case, call_built)
+                now_final = self.clock_ms()
+                qual = evidence_qual.qualify_deal_case_pair(
+                    put_case,
+                    call_case,
+                    target_expiry_ms=state["effective_expiry_ms"],
+                    now_ms=now_final,
+                    slot_ms=slot_ms,
+                    require_in_slot=bool(isinstance(slot_ms, int) and now_final >= slot_ms),
+                    require_live_fresh=True,
+                    require_content_sha256=True,
+                    require_l3=True,
+                    min_valuation_at_slot=True,
+                    input_profile=effective_profile,
+                    quote_hold_ms=quote_hold_final,
                 )
-                if built_ok:
+                if not qual["ok"]:
+                    put_case = self.case_file(put_sid, rebuild=True)
+                    call_case = self.case_file(call_sid, rebuild=True)
+                    now_final = self.clock_ms()
+                    qual = evidence_qual.qualify_deal_case_pair(
+                        put_case,
+                        call_case,
+                        target_expiry_ms=state["effective_expiry_ms"],
+                        now_ms=now_final,
+                        slot_ms=slot_ms,
+                        require_in_slot=bool(isinstance(slot_ms, int) and now_final >= slot_ms),
+                        require_live_fresh=True,
+                        require_content_sha256=True,
+                        require_l3=True,
+                        min_valuation_at_slot=True,
+                        input_profile=effective_profile,
+                        quote_hold_ms=quote_hold_final,
+                    )
+                if qual["ok"]:
                     cases_out = {"put": put_case, "call": call_case}
                 else:
                     state["readiness_status"] = "L3_OR_L4_INCOMPLETE"
-                    state["reasons"] = list(dict.fromkeys([*state["reasons"], "built_case_qualification_failed"]))
+                    state["reasons"] = list(dict.fromkeys([
+                        *state["reasons"],
+                        "built_case_qualification_failed",
+                        *qual.get("reason_codes", []),
+                    ]))
             except WorkbenchError:
                 cases_out = None
                 state["readiness_status"] = "DISCOVERY_INCOMPLETE"
@@ -5295,7 +5276,7 @@ class AstraWorkbench:
             "blockers": list(state["reasons"]),
             "refreshed": refreshed,
             "refresh_triggered": refreshed,
-            "refresh_debounced": refresh_debounced,
+            "refresh_debounced": False,
             "execution_allowed": False,
         }
         if cases_out is not None:
@@ -6231,16 +6212,16 @@ class AstraWorkbench:
 
     _case_file_lock = threading.Lock()
 
-    def case_file(self, snapshot_id: str) -> dict[str, Any]:
+    def case_file(self, snapshot_id: str, *, rebuild: bool = False) -> dict[str, Any]:
         """The frozen case file of one displayed capture (docs/opus/03). Built once from the
         exact lockable point (snapshot + raw books), the served view and the program reading,
-        then stored; later reads return the stored case. A case whose program reading failed
-        is returned but not stored, so a transient failure is not frozen."""
+        then stored; later reads return the stored case unless rebuild=True refreshes from
+        current view/lockable state. A case whose program reading failed is returned, not stored."""
         if not re.fullmatch(r"[0-9a-f]{64}", snapshot_id or ""):
             raise WorkbenchError(400, "bad_snapshot_id", "a 64-hex snapshot id is required")
         path = self.config.state_dir / "case_files" / (snapshot_id + ".json")
         with self._case_file_lock:   # one build per snapshot; concurrent first reads wait
-            if path.exists():
+            if not rebuild and path.exists():
                 return json.loads(path.read_text(encoding="utf-8"))
             with self._view_lock:
                 if snapshot_id in self._held_snapshot_ids:

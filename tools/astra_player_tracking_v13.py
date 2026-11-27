@@ -447,6 +447,11 @@ class LocalOnly(HTTPRedirectHandler):
         return None
 
 
+PREPARE_DEAL_HTTP_TIMEOUT_S = 90.0
+DEFAULT_SERVICE_HTTP_TIMEOUT_S = 30.0
+READINESS_HTTP_TIMEOUT_S = 10.0
+
+
 def local_service(base, token):
     url = urlsplit(base)
     if (url.scheme != 'http' or url.hostname not in {'127.0.0.1', '::1'} or url.username or url.password
@@ -454,11 +459,18 @@ def local_service(base, token):
         raise Blocked('shadow_service_requires_loopback_credential')
     opener = build_opener(ProxyHandler({}), LocalOnly)
 
-    def post(action, body):
+    def post(action, body, *, timeout_s=None):
+        if timeout_s is None:
+            if action == 'prepare_deal' and isinstance(body, dict) and body.get('allow_refresh'):
+                timeout_s = PREPARE_DEAL_HTTP_TIMEOUT_S
+            elif action == 'readiness':
+                timeout_s = READINESS_HTTP_TIMEOUT_S
+            else:
+                timeout_s = DEFAULT_SERVICE_HTTP_TIMEOUT_S
         request = Request(base.rstrip('/') + SERVICE_PATH + '/' + action, data=dossier.encode(body),
                           headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
         try:
-            with opener.open(request, timeout=30) as response:
+            with opener.open(request, timeout=float(timeout_s)) as response:
                 encoded = response.read(MAX_BYTES + 1)
         except HTTPError as exc:
             # 5xx/timeouts are ambiguous after a mutation. Only a confirmed
@@ -3722,19 +3734,29 @@ def _auto_deal(d, plan, archive_root, service, *, llm_config=None):
                     try:
                         source = dossier.collect(archive_root, expiry, slot, clock=d.clock,
                                                  candidate_round=cand_round)
-                    except LookupError as collect_exc:
+                        with _short_writer(d):
+                            _call_with_supported_kwargs(d.deal, hand, source, input_profile=input_profile)
+                    except (LookupError, ValueError) as collect_exc:
+                        if isinstance(collect_exc, dossier.player.HandNotDealt) or (hand / 'evidence').exists():
+                            raise
                         dealt_cases = None
                         rem_budget_s = service_deadline_mono - time.monotonic()
                         if service is not None and rem_budget_s >= 60.0:
                             backfill_attempted = True
+                            prep_timeout_s = min(PREPARE_DEAL_HTTP_TIMEOUT_S, max(10.0, rem_budget_s - 45.0))
                             try:
-                                prep_diag = service('prepare_deal', {
-                                    'target_expiry_ms': expiry,
-                                    'slot_ms': slot,
-                                    'candidate_round': cand_round,
-                                    'allow_refresh': True,
-                                    'input_profile': input_profile,
-                                })
+                                prep_diag = _call_with_supported_kwargs(
+                                    service,
+                                    'prepare_deal',
+                                    {
+                                        'target_expiry_ms': expiry,
+                                        'slot_ms': slot,
+                                        'candidate_round': cand_round,
+                                        'allow_refresh': True,
+                                        'input_profile': input_profile,
+                                    },
+                                    timeout_s=prep_timeout_s,
+                                )
                             except (Blocked, OSError, ValueError, KeyError, TypeError) as prep_exc:
                                 prep_diag = {
                                     'readiness_status': 'PREPARE_DEAL_ERROR',
@@ -3749,35 +3771,82 @@ def _auto_deal(d, plan, archive_root, service, *, llm_config=None):
                                 and isinstance(prep_diag['cases'].get('call'), dict)
                             ):
                                 dealt_cases = prep_diag['cases']
-                                backfill_fn = getattr(dossier.archive, 'backfill_slot_cases', None)
-                                if callable(backfill_fn):
-                                    try:
-                                        bf_res = _call_with_supported_kwargs(
-                                            backfill_fn,
-                                            archive_root,
-                                            dealt_cases,
-                                            slot_ms=slot,
-                                            target_expiry_ms=expiry,
-                                            now_ms=d.clock(),
-                                        )
-                                        if isinstance(bf_res, dict):
-                                            if isinstance(bf_res.get('cases'), (dict, list)):
-                                                dealt_cases = bf_res['cases']
-                                            backfill_persisted = {k: v for k, v in bf_res.items() if k != 'cases'}
-                                        else:
-                                            backfill_persisted = (
-                                                bf_res if isinstance(bf_res, (bool, list, str, int)) else True
+                                qual = evidence_qual.qualify_deal_case_pair(
+                                    dealt_cases.get('put'),
+                                    dealt_cases.get('call'),
+                                    target_expiry_ms=expiry,
+                                    now_ms=d.clock(),
+                                    slot_ms=slot,
+                                    require_in_slot=True,
+                                    require_live_fresh=True,
+                                    require_content_sha256=True,
+                                    require_l3=True,
+                                    input_profile=input_profile,
+                                )
+                                if not qual['ok']:
+                                    dealt_cases = None
+                                    backfill_persisted = {
+                                        'persisted': False,
+                                        'validation_failed': True,
+                                        'error': qual['error'],
+                                    }
+                                    collect_exc = LookupError(f"补建原生案卷校验失败: {qual['error']}")
+                                else:
+                                    verified_pair = [dict(dealt_cases['put']), dict(dealt_cases['call'])]
+                                    backfill_fn = getattr(dossier.archive, 'backfill_slot_cases', None)
+                                    if callable(backfill_fn):
+                                        try:
+                                            bf_res = _call_with_supported_kwargs(
+                                                backfill_fn,
+                                                archive_root,
+                                                dealt_cases,
+                                                slot_ms=slot,
+                                                target_expiry_ms=expiry,
+                                                now_ms=d.clock(),
+                                                input_profile=input_profile,
                                             )
-                                    except (ValueError, KeyError, TypeError) as bf_val_exc:
-                                        dealt_cases = None
-                                        backfill_persisted = {
-                                            'persisted': False,
-                                            'validation_failed': True,
-                                            'error': str(bf_val_exc),
-                                        }
-                                        collect_exc = LookupError(f'补建原生案卷校验失败: {bf_val_exc}')
-                                    except OSError as bf_os_exc:
-                                        backfill_persisted = {'persisted': False, 'error': str(bf_os_exc)}
+                                            if isinstance(bf_res, dict):
+                                                bf_cases = bf_res.get('cases')
+                                                if isinstance(bf_cases, (dict, list)):
+                                                    bf_by_side = dossier._normalize_fallback_cases(bf_cases)
+                                                    if evidence_qual.qualify_deal_case_pair(
+                                                        bf_by_side.get('put'),
+                                                        bf_by_side.get('call'),
+                                                        target_expiry_ms=expiry,
+                                                        now_ms=d.clock(),
+                                                        slot_ms=slot,
+                                                        require_in_slot=True,
+                                                        require_live_fresh=False,
+                                                        require_content_sha256=False,
+                                                        require_l3=True,
+                                                        input_profile=input_profile,
+                                                    )['ok']:
+                                                        dealt_cases = bf_cases
+                                                    else:
+                                                        dealt_cases = verified_pair
+                                                backfill_persisted = {k: v for k, v in bf_res.items() if k != 'cases'}
+                                            else:
+                                                backfill_persisted = (
+                                                    bf_res if isinstance(bf_res, (bool, list, str, int)) else True
+                                                )
+                                        except (ValueError, KeyError, TypeError) as bf_val_exc:
+                                            if 'existing' in str(bf_val_exc).lower():
+                                                dealt_cases = verified_pair
+                                                backfill_persisted = {
+                                                    'persisted': False,
+                                                    'disk_conflict': True,
+                                                    'error': str(bf_val_exc),
+                                                }
+                                            else:
+                                                dealt_cases = None
+                                                backfill_persisted = {
+                                                    'persisted': False,
+                                                    'validation_failed': True,
+                                                    'error': str(bf_val_exc),
+                                                }
+                                                collect_exc = LookupError(f'补建原生案卷校验失败: {bf_val_exc}')
+                                        except OSError as bf_os_exc:
+                                            backfill_persisted = {'persisted': False, 'error': str(bf_os_exc)}
                         if dealt_cases is None:
                             raise collect_exc
                         source = _call_with_supported_kwargs(
@@ -3789,9 +3858,10 @@ def _auto_deal(d, plan, archive_root, service, *, llm_config=None):
                             candidate_round=cand_round,
                             fallback_cases=dealt_cases,
                             provenance_override='targeted workbench verified native case + Deribit public read',
+                            input_profile=input_profile,
                         )
-                    with _short_writer(d):
-                        _call_with_supported_kwargs(d.deal, hand, source, input_profile=input_profile)
+                        with _short_writer(d):
+                            _call_with_supported_kwargs(d.deal, hand, source, input_profile=input_profile)
                 except (OSError, LookupError, ValueError) as exc:
                     p_dict = prep_diag if isinstance(prep_diag, dict) else {}
                     diag = {
@@ -3805,11 +3875,86 @@ def _auto_deal(d, plan, archive_root, service, *, llm_config=None):
                     with _short_writer(d):
                         state = 'POLICY_BLOCKED' if isinstance(exc, dossier.player.HandNotDealt) else 'DATA_BLOCKED'
                         _call_with_supported_kwargs(d.note, hand, state, str(exc), diagnostics=diag)
-            results.append(_deal_hand(
+            deal_res = _deal_hand(
                 d, hand, service, eff_cfg,
                 prompt_version=prompt_version, input_profile=input_profile,
                 service_deadline_mono=service_deadline_mono,
-            ))
+            )
+            if (
+                isinstance(deal_res, dict)
+                and deal_res.get('status') in {'PARSE_FAILED', 'REQUEST_FAILED'}
+                and d.clock() >= slot + plan['deal_grace_ms']
+                and (hand / 'evidence' / 'identity.json').is_file()
+            ):
+                meta_post = d.verify_evidence(hand)
+                exp_post = load(hand / 'expected.json')
+                deadline_post = dossier.Dossiers.reply_deadline(exp_post, meta_post)
+                existing_post = sorted(
+                    (load(p) for p in (hand / 'responses').glob('*/attempt.json')
+                     if not p.parent.name.startswith('.') and load(p).get('channel') == 'API_AUTO'),
+                    key=lambda a: (int(a.get('ordinal') or 0), int(a.get('recorded_at_ms') or 0)),
+                )
+                raw_max_att = _env_str('ASTRA_PLAYER_INITIAL_MAX_ATTEMPTS')
+                try:
+                    max_att_post = max(1, int(raw_max_att)) if raw_max_att else 2
+                except ValueError:
+                    max_att_post = 2
+                if isinstance(eff_cfg.get('max_initial_attempts'), int) and eff_cfg['max_initial_attempts'] >= 1:
+                    max_att_post = eff_cfg['max_initial_attempts']
+                now_post = d.clock()
+                r_post = _initial_retry_decision(
+                    hand,
+                    existing_post,
+                    now_ms=now_post,
+                    deadline_ms=deadline_post,
+                    max_attempts=max_att_post,
+                    recover_only=False,
+                    ignore_retry_after=True,
+                )
+                rem_svc_post = service_deadline_mono - time.monotonic()
+                rem_reply_s = ((deadline_post - now_post) / 1000.0) if deadline_post is not None else 600.0
+                fb_post = _standby_model_target(eff_cfg)
+                used_fb_post = any((a.get('configuration') or {}).get('is_fallback') is True for a in existing_post)
+                next_uses_fb = bool(
+                    fb_post is not None
+                    and not used_fb_post
+                    and not r_post.get('retry_citation_contract')
+                )
+                next_model_post = fb_post['model'] if next_uses_fb else eff_cfg.get('model')
+                next_heavy_post = (
+                    ('pro' in str(next_model_post or '').lower() or 'reasoner' in str(next_model_post or '').lower())
+                    and not eff_cfg.get('timeout_explicit')
+                )
+                min_inline_svc_s = (
+                    min(320.0, max(90.0, rem_reply_s + 5.0))
+                    if next_heavy_post
+                    else 90.0
+                )
+                if (
+                    r_post['can_retry']
+                    and r_post['ra_ms'] <= 15_000
+                    and rem_svc_post >= min_inline_svc_s
+                    and (deadline_post is None or (deadline_post - now_post) >= 90_000)
+                ):
+                    if r_post['ra_ms'] > 0 and eff_cfg.get('transport') is None:
+                        time.sleep(r_post['ra_ms'] / 1000.0)
+                    if d.clock() >= r_post['last_rec_ms'] + r_post['ra_ms']:
+                        deal_res = _deal_hand(
+                            d, hand, service, eff_cfg,
+                            prompt_version=prompt_version, input_profile=input_profile,
+                            service_deadline_mono=service_deadline_mono,
+                        )
+                elif (
+                    r_post['can_retry']
+                    and (deadline_post is None or (deadline_post - now_post) >= 90_000)
+                ):
+                    with _short_writer(d):
+                        d.note(
+                            hand,
+                            'SERVICE_BUDGET_DEFERRED',
+                            f'post_window_retry_deferred:rem_service_s={rem_svc_post:.1f},ra_ms={r_post["ra_ms"]}',
+                        )
+            results.append(deal_res)
         except (Blocked, OSError, ValueError, KeyError, TypeError) as exc:
             results.append(_hand_error(d, hand, exc, slot))
     return results
@@ -3866,6 +4011,88 @@ def _standby_model_target(cfg):
     )
 
 
+def _initial_retry_decision(
+    hand,
+    existing_auto,
+    *,
+    now_ms,
+    deadline_ms,
+    max_attempts,
+    recover_only=False,
+    ignore_retry_after=False,
+):
+    last_auto = existing_auto[-1] if existing_auto else None
+    last_cfg = (
+        last_auto.get('configuration')
+        if isinstance(last_auto, dict) and isinstance(last_auto.get('configuration'), dict)
+        else {}
+    )
+    has_partial = (
+        ('partial_bytes' in last_cfg and last_cfg.get('partial_bytes') is not None)
+        or bool(
+            isinstance(last_auto, dict)
+            and last_auto.get('attempt_id')
+            and (hand / 'api_calls' / dossier.key(last_auto['attempt_id']) / 'partial_reply.json').is_file()
+        )
+    )
+    window_has_45s = (deadline_ms is None or (deadline_ms - now_ms) >= 45_000)
+    retry_precond = bool(
+        not recover_only
+        and last_auto is not None
+        and len(existing_auto) < max_attempts
+        and window_has_45s
+    )
+    is_contract_fail = bool(
+        isinstance(last_auto, dict)
+        and (
+            last_auto.get('error_code') == 'CONTRACT_VALIDATION_FAILED'
+            or last_cfg.get('error_code') == 'CONTRACT_VALIDATION_FAILED'
+            or last_auto.get('contract_validation_status') == 'CONTRACT_FAILED'
+        )
+    )
+    retry_citation_contract = bool(
+        retry_precond
+        and isinstance(last_auto, dict)
+        and last_auto.get('status') == 'PARSE_FAILED'
+        and last_cfg.get('delivery_state') == 'RECEIVED'
+        and is_contract_fail
+        and review.is_recoverable_citation_contract_failure(last_auto.get('contract_validation'))
+    )
+    retry_parse_failed = bool(
+        retry_precond
+        and last_auto.get('status') == 'PARSE_FAILED'
+        and last_cfg.get('delivery_state') == 'RECEIVED'
+        and (not is_contract_fail or retry_citation_contract)
+    )
+    raw_ra = last_cfg.get('retry_after_s')
+    ra_ms = (
+        int(float(raw_ra) * 1000)
+        if isinstance(raw_ra, (int, float)) and not isinstance(raw_ra, bool) and raw_ra > 0
+        else 0
+    )
+    last_rec_ms = int((last_auto or {}).get('recorded_at_ms') or (last_auto or {}).get('decided_at_ms') or 0)
+    cooldown_ready = bool(ignore_retry_after or now_ms >= last_rec_ms + ra_ms)
+    retry_provider_overload = bool(
+        retry_precond
+        and last_auto.get('status') == 'REQUEST_FAILED'
+        and last_cfg.get('http_status') in {429, 503, 529}
+        and not isinstance(last_cfg.get('http_status'), bool)
+        and last_cfg.get('delivery_state') in {'PROVIDER_REJECTED', 'PROVIDER_UNAVAILABLE'}
+        and not has_partial
+        and cooldown_ready
+    )
+    return dict(
+        can_retry=bool(retry_parse_failed or retry_provider_overload),
+        retry_parse_failed=retry_parse_failed,
+        retry_citation_contract=retry_citation_contract,
+        retry_provider_overload=retry_provider_overload,
+        ra_ms=ra_ms,
+        last_rec_ms=last_rec_ms,
+        has_partial=has_partial,
+        window_has_45s=window_has_45s,
+    )
+
+
 def _deal_hand(
     d,
     hand,
@@ -3895,6 +4122,7 @@ def _deal_hand(
     link_todo = None
     llm_input = None
     retry_parse_failed = False
+    retry_citation_contract = False
     retry_provider_overload = False
     with _short_writer(d):
         for request_file in sorted((hand / 'api_calls').glob('*/request.json')):
@@ -3960,42 +4188,19 @@ def _deal_hand(
                 max_initial_attempts = cfg['max_initial_attempts']
             last_auto = existing_auto[-1] if existing_auto else None
             last_cfg = (last_auto.get('configuration') if isinstance(last_auto, dict) and isinstance(last_auto.get('configuration'), dict) else {})
-            has_partial = (
-                ('partial_bytes' in last_cfg and last_cfg.get('partial_bytes') is not None)
-                or bool(
-                    isinstance(last_auto, dict)
-                    and last_auto.get('attempt_id')
-                    and (hand / 'api_calls' / dossier.key(last_auto['attempt_id']) / 'partial_reply.json').is_file()
-                )
+            r_dec = _initial_retry_decision(
+                hand,
+                existing_auto,
+                now_ms=now,
+                deadline_ms=deadline,
+                max_attempts=max_initial_attempts,
+                recover_only=recover_only,
             )
-            window_has_45s = (deadline is None or (deadline - now) >= 45_000)
-            retry_precond = bool(
-                not recover_only
-                and last_auto is not None
-                and len(existing_auto) < max_initial_attempts
-                and window_has_45s
-            )
-            retry_parse_failed = bool(
-                retry_precond
-                and last_auto.get('status') == 'PARSE_FAILED'
-                and last_cfg.get('delivery_state') == 'RECEIVED'
-                and last_auto.get('error_code') != 'CONTRACT_VALIDATION_FAILED'
-                and last_cfg.get('error_code') != 'CONTRACT_VALIDATION_FAILED'
-                and last_auto.get('contract_validation_status') != 'CONTRACT_FAILED'
-            )
-            raw_ra = last_cfg.get('retry_after_s')
-            ra_ms = int(float(raw_ra) * 1000) if isinstance(raw_ra, (int, float)) and not isinstance(raw_ra, bool) and raw_ra > 0 else 0
-            last_rec_ms = int((last_auto or {}).get('recorded_at_ms') or (last_auto or {}).get('decided_at_ms') or 0)
-            retry_provider_overload = bool(
-                retry_precond
-                and last_auto.get('status') == 'REQUEST_FAILED'
-                and last_cfg.get('http_status') in {429, 503, 529}
-                and not isinstance(last_cfg.get('http_status'), bool)
-                and last_cfg.get('delivery_state') in {'PROVIDER_REJECTED', 'PROVIDER_UNAVAILABLE'}
-                and not has_partial
-                and now >= last_rec_ms + ra_ms
-            )
-            can_retry_initial = retry_parse_failed or retry_provider_overload
+            retry_parse_failed = r_dec['retry_parse_failed']
+            retry_citation_contract = bool(r_dec.get('retry_citation_contract'))
+            retry_provider_overload = r_dec['retry_provider_overload']
+            can_retry_initial = r_dec['can_retry']
+            window_has_45s = r_dec['window_has_45s']
             budget_exhausted_today = any(
                 n.get('state') == 'DAILY_BUDGET_EXHAUSTED'
                 and ((n.get('recorded_at_ms') or 0) + 8 * 3_600_000) // dossier.DAY == bjt_today
@@ -4059,6 +4264,7 @@ def _deal_hand(
     already_used_fallback = any((a.get('configuration') or {}).get('is_fallback') is True for a in existing_auto)
     use_fallback = bool(
         (retry_parse_failed or retry_provider_overload)
+        and not retry_citation_contract
         and fb_target is not None
         and not already_used_fallback
     )
@@ -4163,25 +4369,28 @@ def _deal_hand(
             and fb_target is not None
             and elapsed_s < 30.0
         ):
-            att_cfg = att.get('configuration') if isinstance(att.get('configuration'), dict) else {}
-            att_ra = att_cfg.get('retry_after_s')
-            ra_val = float(att_ra) if isinstance(att_ra, (int, float)) and not isinstance(att_ra, bool) else 0.0
-            fb_room_s = min(float(fb_target['timeout_s']), 720.0) + 30.0
-            rem_svc_after = (eff_service_deadline - time.monotonic()) if eff_service_deadline is not None else None
             now_after = d.clock()
+            fb_dec = _initial_retry_decision(
+                hand,
+                [att],
+                now_ms=now_after,
+                deadline_ms=deadline,
+                max_attempts=max_initial_attempts,
+                recover_only=False,
+                ignore_retry_after=True,
+            )
+            ra_val = fb_dec['ra_ms'] / 1000.0
+            fb_room_s = 65.0 + ra_val
+            rem_svc_after = (eff_service_deadline - time.monotonic()) if eff_service_deadline is not None else None
             if (
-                att.get('status') == 'REQUEST_FAILED'
-                and att_cfg.get('http_status') in {429, 503, 529}
-                and not isinstance(att_cfg.get('http_status'), bool)
-                and att_cfg.get('delivery_state') in {'PROVIDER_REJECTED', 'PROVIDER_UNAVAILABLE'}
-                and 'partial_bytes' not in att_cfg
+                fb_dec['retry_provider_overload']
                 and ra_val <= 5.0
                 and (rem_svc_after is None or rem_svc_after >= fb_room_s)
                 and (deadline is None or (deadline - now_after) >= int(fb_room_s * 1000))
             ):
                 if 0 < ra_val <= 5.0 and fb_target['transport'] is None:
                     time.sleep(ra_val)
-                if d.clock() >= int(att.get('recorded_at_ms') or 0) + int(ra_val * 1000):
+                if d.clock() >= fb_dec['last_rec_ms'] + fb_dec['ra_ms']:
                     return _deal_hand(
                         d, hand, service, cfg,
                         recover_only=False,
@@ -4209,9 +4418,24 @@ def _deal_hand(
     return result
 
 
-def recover_initial(d, service):
-    """Sync may finish an existing hand after the last dispatch timer. Never call the model."""
+def recover_initial(d, service, *, llm_config=None, allow_post_window_retry=False):
+    """Finish an existing frozen hand after the dispatch window.
+
+    Default `allow_post_window_retry=False` is receipt-only and never calls the model.
+    When `allow_post_window_retry=True` (used by `sync-open --review` after the last
+    scheduled deal timer tick), a frozen hand still inside `reply_deadline` may run its
+    single remaining budget-bounded retry or deferred first dispatch under `.auto-deal` lock.
+    """
     out = []
+    eff_cfg = _llm_settings(llm_config) if allow_post_window_retry else {}
+    service_deadline_mono = None
+    if allow_post_window_retry:
+        cfg_service_budget_s = float(eff_cfg.get('service_budget_s') or 810.0)
+        service_deadline_mono = (
+            float(eff_cfg['service_deadline_mono'])
+            if eff_cfg.get('service_deadline_mono') is not None
+            else time.monotonic() + cfg_service_budget_s
+        )
     with ExitStack() as lease:
         try:
             lease.enter_context(dossier.writer(d.root / '.auto-deal'))
@@ -4238,9 +4462,69 @@ def recover_initial(d, service):
                     unfinished = any(not (c / 'not_sent.json').exists() and
                                      not (hand / 'responses' / c.name / 'attempt.json').exists() for c in calls)
                     saved_valid = any(load(p).get('status') == 'VALID' for p in dossier.attempts(hand))
-                    if unfinished or (saved_valid and not decision) or (decision and d.clock() < exp['expiry_ms']):
+                    now = d.clock()
+                    if unfinished or (saved_valid and not decision) or (decision and now < exp['expiry_ms']):
                         if not _link_blocked(hand / 'tracking'):
                             out.append(_deal_hand(d, hand, service, {}, recover_only=True))
+                        continue
+                    if (
+                        allow_post_window_retry
+                        and not decision
+                        and not _link_blocked(hand / 'tracking')
+                        and (hand / 'evidence' / 'identity.json').is_file()
+                        and now < exp['expiry_ms']
+                    ):
+                        plan_cfg = exp.get('plan') if isinstance(exp.get('plan'), dict) else {}
+                        slot_ms = exp.get('scheduled_at_ms')
+                        grace_ms = int(plan_cfg.get('deal_grace_ms') or 30 * dossier.MINUTE)
+                        # Wait until strictly after the final 16:32:00Z (+15s AccuracySec) deal timer tick.
+                        post_schedule_cutoff_ms = (
+                            slot_ms + grace_ms + 3 * dossier.MINUTE
+                            if type(slot_ms) is int
+                            else None
+                        )
+                        if post_schedule_cutoff_ms is None or now < post_schedule_cutoff_ms:
+                            continue
+                        meta = d.verify_evidence(hand)
+                        deadline = dossier.Dossiers.reply_deadline(exp, meta)
+                        if deadline is not None and (deadline - now) < 45_000:
+                            continue
+                        existing_auto = sorted(
+                            (load(p) for p in (hand / 'responses').glob('*/attempt.json')
+                             if not p.parent.name.startswith('.') and load(p).get('channel') == 'API_AUTO'),
+                            key=lambda a: (int(a.get('ordinal') or 0), int(a.get('recorded_at_ms') or 0)),
+                        )
+                        raw_max_att = _env_str('ASTRA_PLAYER_INITIAL_MAX_ATTEMPTS')
+                        try:
+                            max_att = max(1, int(raw_max_att)) if raw_max_att else 2
+                        except ValueError:
+                            max_att = 2
+                        if isinstance(eff_cfg.get('max_initial_attempts'), int) and eff_cfg['max_initial_attempts'] >= 1:
+                            max_att = eff_cfg['max_initial_attempts']
+                        r_dec = _initial_retry_decision(
+                            hand,
+                            existing_auto,
+                            now_ms=now,
+                            deadline_ms=deadline,
+                            max_attempts=max_att,
+                            recover_only=False,
+                        )
+                        notes = [load(p) for p in (hand / 'issuance').glob('*.json')]
+                        deferred_first = (
+                            not existing_auto
+                            and any(n.get('state') == 'SERVICE_BUDGET_DEFERRED' for n in notes)
+                        )
+                        if r_dec['can_retry'] or deferred_first:
+                            out.append(_deal_hand(
+                                d,
+                                hand,
+                                service,
+                                eff_cfg,
+                                recover_only=False,
+                                prompt_version=plan_cfg.get('prompt_version'),
+                                input_profile=plan_cfg.get('input_profile'),
+                                service_deadline_mono=service_deadline_mono,
+                            ))
                 except (Blocked, OSError, ValueError, KeyError, TypeError) as exc:
                     out.append(_hand_error(d, hand, exc))
     return out
@@ -4789,7 +5073,8 @@ def audit_record(hand, now, tracker_status, *, detail=False):
                       key=lambda p: p['ordinal'])
     state = (decision['judgment']['action'] if decision else attempts[-1]['status'] if attempts else
              notes[-1]['state'] if notes and notes[-1].get('state') in {
-                 'LLM_NOT_CONFIGURED', 'DAILY_BUDGET_EXHAUSTED', 'POLICY_BLOCKED', 'SERVICE_BUDGET_DEFERRED'} else
+                 'DEAL_BLOCKED', 'LLM_NOT_CONFIGURED', 'DAILY_BUDGET_EXHAUSTED',
+                 'POLICY_BLOCKED', 'SERVICE_BUDGET_DEFERRED'} else
              'AWAITING_RESPONSE' if frozen and deadline is not None and now < deadline else 'NO_RESPONSE' if frozen
              else notes[-1]['state'] if notes else 'EXPECTED')
     tracker = receipt['t0']['tracker_episode_id'] if receipt else None
@@ -6062,6 +6347,8 @@ def prewarm(plan, archive, service, *, clock=dossier.now_ms, public=dossier.publ
         report['native_expiry_present'] = None
 
     prep = None
+    prep_exc_status = None
+    prep_exc_blocker = None
     if service is None:
         report['tracking'] = {'state': 'UNAVAILABLE'}
     else:
@@ -6086,7 +6373,20 @@ def prewarm(plan, archive, service, *, clock=dossier.now_ms, public=dossier.publ
                 report['tracking'] = raw_prep
             else:
                 report['tracking'] = service('readiness', {})
-        except (Blocked, OSError, ValueError, KeyError, TypeError):
+        except (Blocked, OSError, ValueError, KeyError, TypeError) as exc:
+            if isinstance(exc, Blocked):
+                prep_exc_status = 'WORKBENCH_UNAVAILABLE'
+                prep_exc_blocker = exc.code
+            elif (
+                isinstance(exc, TimeoutError)
+                or isinstance(getattr(exc, 'reason', None), TimeoutError)
+                or 'timed out' in str(exc).lower()
+            ):
+                prep_exc_status = 'PREPARE_DEAL_TIMEOUT'
+                prep_exc_blocker = 'prepare_deal_timeout'
+            else:
+                prep_exc_status = 'PREPARE_DEAL_UNAVAILABLE'
+                prep_exc_blocker = 'workbench_prepare_deal_failed'
             try:
                 report['tracking'] = service('readiness', {})
             except (Blocked, OSError, ValueError, KeyError, TypeError):
@@ -6123,33 +6423,52 @@ def prewarm(plan, archive, service, *, clock=dossier.now_ms, public=dossier.publ
         for b in (prep.get('blockers') or []):
             if b and str(b) not in blockers:
                 blockers.append(str(b))
-        if not prep_ready and not (prep.get('blockers')):
-            blockers.append(f'workbench_not_ready:{prep_status}')
         sides_info = prep.get('sides') if isinstance(prep.get('sides'), dict) else {}
+        if prep_ready:
+            raw_cases = prep.get('cases')
+            qual_now = max(now, clock())
+            sides_ok = isinstance(sides_info.get('put'), dict) and isinstance(sides_info.get('call'), dict)
+            cases_ok = (
+                sides_ok
+                and isinstance(raw_cases, dict)
+                and evidence_qual.qualify_deal_case_pair(
+                    raw_cases.get('put'),
+                    raw_cases.get('call'),
+                    target_expiry_ms=expiry,
+                    now_ms=qual_now,
+                    slot_ms=slot,
+                    require_in_slot=(now >= slot),
+                    require_live_fresh=True,
+                    require_content_sha256=True,
+                    require_l3=True,
+                    input_profile=input_profile,
+                )['ok']
+            )
+            if not cases_ok:
+                prep_ready = False
+                prep_status = 'SOURCE_CASES_UNVERIFIED'
+                if 'prepare_deal_cases_missing_or_unqualified' not in blockers:
+                    blockers.append('prepare_deal_cases_missing_or_unqualified')
+        elif not (prep.get('blockers')):
+            blockers.append(f'workbench_not_ready:{prep_status}')
         refresh_triggered = bool(prep.get('refresh_triggered'))
         cooldown_ms = int(prep.get('deribit_cooldown_remaining_ms') or 0)
     else:
+        prep_ready = False
         trk = report.get('tracking')
-        if not isinstance(trk, dict) or trk.get('state') == 'UNAVAILABLE':
-            prep_ready = False
-            prep_status = 'WORKBENCH_UNAVAILABLE'
-            blockers.append('workbench_service_unavailable')
-        elif trk.get('enabled') is False:
-            prep_ready = False
+        if isinstance(trk, dict) and trk.get('enabled') is False:
             prep_status = 'TRACKING_DISABLED'
             blockers.append('tracking_disabled')
+        elif prep_exc_status is not None:
+            prep_status = prep_exc_status
+            if prep_exc_blocker and prep_exc_blocker not in blockers:
+                blockers.append(prep_exc_blocker)
+        elif not isinstance(trk, dict) or trk.get('state') == 'UNAVAILABLE':
+            prep_status = 'WORKBENCH_UNAVAILABLE'
+            blockers.append('workbench_service_unavailable')
         else:
-            has_recent_pair = any(
-                row.get('put', 0) >= 1 and row.get('call', 0) >= 1
-                for row in archive_cases.values()
-            )
-            if has_recent_pair:
-                prep_ready = True
-                prep_status = 'ARCHIVE_PAIR_PRESENT'
-            else:
-                prep_ready = False
-                prep_status = 'PREPARE_DEAL_UNAVAILABLE'
-                blockers.append('recent_archive_cases_missing')
+            prep_status = 'PREPARE_DEAL_UNAVAILABLE'
+            blockers.append('workbench_prepare_deal_failed')
         sides_info = {}
         refresh_triggered = False
         cooldown_ms = 0
@@ -6306,7 +6625,7 @@ def main():
                 with _short_writer(d):
                     d.summary(load(hand / 'expected.json')['expiry_ms'])
             elif args.command == 'sync-open':
-                out = recover_initial(d, service)
+                out = recover_initial(d, service, allow_post_window_retry=bool(args.review))
                 for request_file in sorted((d.root / 'dossiers').glob('*/hands/hand_*/tracking/request.json')):
                     hand = request_file.parent.parent
                     try:

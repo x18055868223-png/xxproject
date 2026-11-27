@@ -41,6 +41,7 @@ from typing import Any, Callable, Mapping
 if __package__:
     from . import astra_case_file_v1 as case_file_core
     from . import astra_deribit_cooldown_v1 as deribit_cooldown
+    from . import astra_evidence_qual_v1 as evidence_qual
     from . import astra_commercial_math_v17 as commercial_math
     from . import astra_inquiry_v1 as inquiry
     from . import astra_market_baseline_v1 as market_baseline
@@ -56,6 +57,7 @@ if __package__:
 else:
     import astra_case_file_v1 as case_file_core
     import astra_deribit_cooldown_v1 as deribit_cooldown
+    import astra_evidence_qual_v1 as evidence_qual
     import astra_commercial_math_v17 as commercial_math
     import astra_inquiry_v1 as inquiry
     import astra_market_baseline_v1 as market_baseline
@@ -1398,33 +1400,42 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
     hour = _utc(now_ms).strftime("%Y-%m-%dT%H")
     day = hour[:10]
     new_cases: list[tuple[str, Mapping[str, Any]]] = []
-    # Defer early-hour case freeze when workbench capture is PARTIAL (<2 sides) inside
-    # the first 15m so a recovering partner later in the hour does not fail the 60s pair skew limit.
-    disc_state = str(((view or {}).get("discovery_status") or {}).get("capture_state") or "").upper()
-    defer_partial_single_side = (
-        disc_state == "PARTIAL"
-        and len({item.get("side") for item in displayed.values() if item.get("side") in {"put", "call"}}) < 2
-        and (now_ms % HOUR_MS) < 15 * 60_000
+    # Defer early-hour (<15m) single-side case freeze across PARTIAL, COMPLETE single-side, or
+    # single-side fetch_case errors so a recovering partner inside <15m preserves <=60s pair skew.
+    existing_hour_sides = {s for s in ("put", "call") if f"{hour}|{s}" in state["cases"]}
+    fetched_ok: list[tuple[str, str | None, Mapping[str, Any]]] = []
+    fetch_errors: list[tuple[str | None, Exception]] = []
+    for key, item in displayed.items():
+        side, snap = item.get("side"), item["snapshot"]
+        slot_key = f"{hour}|{side}"
+        if slot_key in state["cases"]:
+            continue
+        try:
+            fetched_ok.append((key, side, fetch_case(snap["snapshot_id"])))
+        except Exception as exc:
+            fetch_errors.append((side, exc))
+    ready_sides = existing_hour_sides | {side for _, side, _ in fetched_ok if side in {"put", "call"}}
+    pair_aware_view = (
+        isinstance((view or {}).get("discovery_status"), Mapping)
+        or isinstance((view or {}).get("discovery"), Mapping)
+        or len((view or {}).get("candidates") or []) >= 2
+        or bool(fetch_errors)
+        or bool(existing_hour_sides)
     )
-    if not defer_partial_single_side:
-        for key, item in displayed.items():
-            side, snap = item.get("side"), item["snapshot"]
+    if not (pair_aware_view and len(ready_sides) < 2 and (now_ms % HOUR_MS) < 15 * 60_000):
+        for key, side, case in fetched_ok:
             slot_key = f"{hour}|{side}"
-            if slot_key in state["cases"]:
-                continue
-            try:
-                case = fetch_case(snap["snapshot_id"])
-                data = _gzip_json(case)
-                rel = f"cases/{day}/{hour[11:]}_{side}_{case['case_id']}.json.gz"
-                archive.write_new(rel, data, at_ms=now_ms, kind="case")
-                credit = (case_entry(case, "L1.economics") or {}).get("net_credit_after_fee_btc")
-                state["cases"][slot_key] = {"case_id": case["case_id"], "path": rel, "contract_key": key}
-                state["contracts"][key]["cases"].append({"case_id": case["case_id"], "asof_ms": case.get("asof_ms"),
-                                                         "net_credit_after_fee_btc": credit, "path": rel})
-                new_cases.append((side, case))
-                report["cases"] += 1
-            except Exception as exc:
-                report["errors"].append({"step": "case", "side": side, "error": type(exc).__name__, "detail": str(exc)[:160]})
+            data = _gzip_json(case)
+            rel = f"cases/{day}/{hour[11:]}_{side}_{case['case_id']}.json.gz"
+            archive.write_new(rel, data, at_ms=now_ms, kind="case")
+            credit = (case_entry(case, "L1.economics") or {}).get("net_credit_after_fee_btc")
+            state["cases"][slot_key] = {"case_id": case["case_id"], "path": rel, "contract_key": key}
+            state["contracts"][key]["cases"].append({"case_id": case["case_id"], "asof_ms": case.get("asof_ms"),
+                                                     "net_credit_after_fee_btc": credit, "path": rel})
+            new_cases.append((side, case))
+            report["cases"] += 1
+        for side, exc in fetch_errors:
+            report["errors"].append({"step": "case", "side": side, "error": type(exc).__name__, "detail": str(exc)[:160]})
         archive.save_state(state)
 
     states = _program_states(view)
@@ -1719,17 +1730,6 @@ def case_entry(case: Mapping[str, Any], ref: str) -> Any:
     return case["layers"][at["layer"]][at["index"]].get("values")
 
 
-def _raw_case_layer_entry(case: Mapping[str, Any], ref: str) -> Mapping[str, Any] | None:
-    at = (case.get("refs") or {}).get(ref)
-    if not isinstance(at, Mapping):
-        return None
-    try:
-        entry = case["layers"][at["layer"]][at["index"]]
-    except (KeyError, IndexError, TypeError):
-        return None
-    return entry if isinstance(entry, Mapping) else None
-
-
 def _is_strict_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
@@ -1739,9 +1739,7 @@ def _gzip_json(payload: Mapping[str, Any]) -> bytes:
 
 
 def _canonical_case_content_sha256(case: Mapping[str, Any]) -> str:
-    body = {k: v for k, v in case.items() if k != "build"}
-    encoded = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    return evidence_qual.canonical_case_content_sha256(case)
 
 
 @contextmanager
@@ -1790,6 +1788,7 @@ def backfill_slot_cases(
     now_ms: int | None = None,
     lock_timeout_s: float = 2.0,
     lock_poll_s: float = 0.1,
+    input_profile: str = "legacy_v1",
 ) -> dict[str, Any]:
     """Idempotently persist a verified Put/Call case pair for a scheduled UTC hour slot."""
     if not _is_strict_int(slot_ms) or not _is_strict_int(target_expiry_ms):
@@ -1802,89 +1801,26 @@ def backfill_slot_cases(
     ):
         raise ValueError("cases_by_side must contain both 'put' and 'call' case mappings")
 
-    validated: dict[str, dict[str, Any]] = {}
-    built_by_side: dict[str, int] = {}
-    val_ts_by_side: dict[str, int] = {}
-    contracts_by_side: dict[str, Mapping[str, Any]] = {}
-    for side in ("put", "call"):
-        case = dict(cases_by_side[side])
-        case_id = case.get("case_id")
-        if not isinstance(case_id, str) or not re.fullmatch(r"cf_[A-Za-z0-9_-]+", case_id):
-            raise ValueError(f"invalid {side} case_id")
-        build = case.get("build")
-        if not isinstance(build, Mapping):
-            raise ValueError(f"missing {side} build metadata")
-        built_ms = build.get("built_at_ms")
-        if not _is_strict_int(built_ms) or not (slot_ms <= built_ms <= eff_now):
-            raise ValueError(f"{side} built_at_ms outside [slot_ms, now_ms]")
-        asof_ms = case.get("asof_ms")
-        if (
-            not _is_strict_int(asof_ms)
-            or not (0 <= (built_ms - asof_ms) <= 180_000)
-            or asof_ms < (slot_ms - 180_000)
-            or (eff_now - asof_ms) > 180_000
-        ):
-            raise ValueError(f"{side} asof_ms stale (>180s) or outside slot window")
-        content_sha = build.get("content_sha256")
-        if not isinstance(content_sha, str) or content_sha != _canonical_case_content_sha256(case):
-            raise ValueError(f"{side} content_sha256 mismatch")
-        contract = case_entry(case, "L1.contract")
-        if not isinstance(contract, Mapping):
-            raise ValueError(f"missing {side} L1.contract")
-        if contract.get("side") != side:
-            raise ValueError(f"{side} L1.contract side mismatch")
-        if not _is_strict_int(contract.get("expiry_ms")) or contract["expiry_ms"] != target_expiry_ms:
-            raise ValueError(f"{side} L1.contract expiry_ms mismatch")
-        short_inst = contract.get("short_instrument")
-        long_inst = contract.get("long_instrument")
-        if (
-            not isinstance(short_inst, str)
-            or not short_inst.strip()
-            or not isinstance(long_inst, str)
-            or not long_inst.strip()
-        ):
-            raise ValueError(f"missing {side} contract instruments")
-        quote = case_entry(case, "L2.quote")
-        if not isinstance(quote, Mapping):
-            raise ValueError(f"missing {side} L2.quote")
-        q_credit = _num(quote.get("credit_btc"))
-        if q_credit is None or q_credit <= 0:
-            raise ValueError(f"{side} L2.quote missing positive credit_btc")
-        if (quote.get("gap_reasons") or []) or (quote.get("quote_gap_reasons") or []):
-            raise ValueError(f"{side} L2.quote contains gap_reasons")
-        q_val_ts = quote.get("valuation_ts_ms")
-        if (
-            not _is_strict_int(q_val_ts)
-            or not (0 <= (built_ms - q_val_ts) <= 180_000)
-            or q_val_ts < (slot_ms - 180_000)
-            or (eff_now - q_val_ts) > 180_000
-        ):
-            raise ValueError(f"{side} L2.quote valuation_ts_ms stale (>180s) or outside slot window")
-        l3_raw = _raw_case_layer_entry(case, "L3.expiry_walls")
-        l3_vals = l3_raw.get("values") if isinstance(l3_raw, Mapping) else None
-        l3_asof = l3_raw.get("asof_ms") if isinstance(l3_raw, Mapping) else None
-        l3_pin = _num((l3_vals.get("walls") or {}).get("pin")) if isinstance(l3_vals, Mapping) and isinstance(l3_vals.get("walls"), Mapping) else None
-        if (
-            not isinstance(l3_raw, Mapping)
-            or l3_raw.get("quality") in {"missing", "unknown", "stale"}
-            or not _is_strict_int(l3_asof)
-            or not (0 <= (built_ms - l3_asof) <= 5 * 60_000)
-            or not isinstance(l3_vals, Mapping)
-            or l3_vals.get("expiry_ms") != target_expiry_ms
-            or l3_vals.get("stale") is True
-            or l3_pin is None
-            or l3_pin <= 0
-        ):
-            raise ValueError(f"{side} L3.expiry_walls missing or stale (>5m)")
-        validated[side] = case
-        built_by_side[side] = built_ms
-        val_ts_by_side[side] = q_val_ts
-        contracts_by_side[side] = contract
-
-    if abs(built_by_side["put"] - built_by_side["call"]) > 60_000:
-        raise ValueError("pair built_at_ms skew exceeds 60s")
-    if abs(val_ts_by_side["put"] - val_ts_by_side["call"]) > 60_000:
-        raise ValueError("pair valuation_ts_ms skew exceeds 60s")
+    put_copy = dict(cases_by_side["put"])
+    call_copy = dict(cases_by_side["call"])
+    qual = evidence_qual.qualify_deal_case_pair(
+        put_copy,
+        call_copy,
+        target_expiry_ms=target_expiry_ms,
+        now_ms=eff_now,
+        slot_ms=slot_ms,
+        require_in_slot=True,
+        require_live_fresh=True,
+        require_content_sha256=True,
+        require_l3=True,
+        input_profile=input_profile or "legacy_v1",
+    )
+    if not qual["ok"]:
+        raise ValueError(qual["error"])
+    validated = {"put": put_copy, "call": call_copy}
+    built_by_side = qual["built_by_side"]
+    val_ts_by_side = qual["valuation_ts_by_side"]
+    contracts_by_side = qual["contracts_by_side"]
 
     slot_dt = _utc(slot_ms)
     day = slot_dt.strftime("%Y-%m-%d")

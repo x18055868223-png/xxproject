@@ -16,11 +16,13 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 
 try:
-    from . import astra_commercial_math_v17 as cash, astra_level_behaviour_v1 as levels
+    from . import astra_commercial_math_v17 as cash, astra_evidence_qual_v1 as evidence_qual
+    from . import astra_level_behaviour_v1 as levels
     from . import astra_player_condition_v1 as condition, astra_player_input_v1 as player
     from . import astra_research_archive_v1 as archive
 except ImportError:
     import astra_commercial_math_v17 as cash
+    import astra_evidence_qual_v1 as evidence_qual
     import astra_level_behaviour_v1 as levels
     import astra_player_condition_v1 as condition
     import astra_player_input_v1 as player
@@ -293,36 +295,105 @@ def _normalize_fallback_cases(fallback_cases):
 
 
 def collect(archive_root, expiry, slot, *, startup=False, clock=now_ms, band_snapshot=None, candidate_round='r2',
-            fallback_cases=None, provenance_override=None):
+            fallback_cases=None, provenance_override=None, input_profile='legacy_v1'):
     """Use the existing archive's native cases. Public reads fill the current path and expiry proof."""
     archive_root = Path(archive_root)
     day = utc(expiry).date().isoformat()
     case_dir = archive_root / 'cases' / utc(slot).date().isoformat()
     fallback_by_side = _normalize_fallback_cases(fallback_cases)
+    disk_matches = {
+        s: list(case_dir.glob(f'{utc(slot):%H}_{s}_*.json.gz')) if case_dir.is_dir() else []
+        for s in ('put', 'call')
+    }
+    for s in ('put', 'call'):
+        if len(disk_matches[s]) > 1:
+            raise LookupError(f'需同一个采集小时的唯一 {s} 原生案卷，现有 {len(disk_matches[s])} 份')
+    for side in ('put', 'call'):
+        if side not in fallback_by_side:
+            continue
+        fb_case = fallback_by_side[side]
+        cid = fb_case.get('case_id')
+        if not isinstance(cid, str) or not cid.startswith('cf_'):
+            raise LookupError(f'无效的 {side} 回退案卷身份')
+        fb_build = fb_case.get('build') if isinstance(fb_case.get('build'), dict) else {}
+        if fb_build.get('content_sha256') is not None:
+            if fb_build.get('content_sha256') != evidence_qual.canonical_case_content_sha256(fb_case):
+                raise LookupError(f'{side} 回退案卷内容哈希校验失败')
+    has_full_fallback = ('put' in fallback_by_side and 'call' in fallback_by_side)
     candidates = []
     candidate_is_fallback = []
     used_fallback = False
-    for side in ('put', 'call'):
-        matches = list(case_dir.glob(f'{utc(slot):%H}_{side}_*.json.gz')) if case_dir.is_dir() else []
-        if len(matches) > 1:
-            raise LookupError(f'需同一个采集小时的唯一 {side} 原生案卷，现有 {len(matches)} 份')
-        if len(matches) == 1:
-            candidates.append(player.read_json(matches[0]))
-            candidate_is_fallback.append(False)
-        elif side in fallback_by_side:
-            fb_case = fallback_by_side[side]
-            cid = fb_case.get('case_id')
-            if not isinstance(cid, str) or not cid.startswith('cf_'):
-                raise LookupError(f'无效的 {side} 回退案卷身份')
-            fb_build = fb_case.get('build') if isinstance(fb_case.get('build'), dict) else {}
-            if fb_build.get('content_sha256') is not None:
-                if fb_build.get('content_sha256') != archive._canonical_case_content_sha256(fb_case):
-                    raise LookupError(f'{side} 回退案卷内容哈希校验失败')
-            candidates.append(fb_case)
-            candidate_is_fallback.append(True)
+    if len(disk_matches['put']) == 1 and len(disk_matches['call']) == 1:
+        disk_put = player.read_json(disk_matches['put'][0])
+        disk_call = player.read_json(disk_matches['call'][0])
+        disk_pair_ok = (
+            not has_full_fallback
+            or evidence_qual.qualify_deal_case_pair(
+                disk_put,
+                disk_call,
+                target_expiry_ms=expiry,
+                now_ms=clock(),
+                slot_ms=slot,
+                require_in_slot=not startup,
+                require_live_fresh=False,
+                require_content_sha256=False,
+                require_l3=True,
+                input_profile=input_profile or 'legacy_v1',
+            )['ok']
+        )
+        if not disk_pair_ok and has_full_fallback:
+            candidates = [fallback_by_side['put'], fallback_by_side['call']]
+            candidate_is_fallback = [True, True]
             used_fallback = True
         else:
-            raise LookupError(f'需同一个采集小时的唯一 {side} 原生案卷，现有 0 份')
+            candidates = [disk_put, disk_call]
+            candidate_is_fallback = [False, False]
+    elif (len(disk_matches['put']) + len(disk_matches['call']) == 1) and has_full_fallback:
+        disk_side = 'put' if len(disk_matches['put']) == 1 else 'call'
+        other_side = 'call' if disk_side == 'put' else 'put'
+        disk_case = player.read_json(disk_matches[disk_side][0])
+        other_fb = fallback_by_side[other_side]
+        other_quote = player.values(other_fb, 'L2.quote')
+        other_val_ts = other_quote.get('valuation_ts_ms') if isinstance(other_quote, dict) else None
+        if type(other_val_ts) is not int:
+            other_val_ts = other_fb.get('asof_ms')
+        mixed_put, mixed_call = (disk_case, other_fb) if disk_side == 'put' else (other_fb, disk_case)
+        now_pair = clock()
+        can_combine = (
+            type(other_val_ts) is int
+            and (now_pair - other_val_ts) <= 180_000
+            and evidence_qual.qualify_deal_case_pair(
+                mixed_put,
+                mixed_call,
+                target_expiry_ms=expiry,
+                now_ms=now_pair,
+                slot_ms=slot,
+                require_in_slot=not startup,
+                require_live_fresh=False,
+                require_content_sha256=False,
+                require_l3=True,
+                input_profile=input_profile or 'legacy_v1',
+            )['ok']
+        )
+        if can_combine:
+            candidates = [mixed_put, mixed_call]
+            candidate_is_fallback = [False, True] if disk_side == 'put' else [True, False]
+            used_fallback = True
+        else:
+            candidates = [fallback_by_side['put'], fallback_by_side['call']]
+            candidate_is_fallback = [True, True]
+            used_fallback = True
+    else:
+        for side in ('put', 'call'):
+            if len(disk_matches[side]) == 1:
+                candidates.append(player.read_json(disk_matches[side][0]))
+                candidate_is_fallback.append(False)
+            elif side in fallback_by_side:
+                candidates.append(fallback_by_side[side])
+                candidate_is_fallback.append(True)
+                used_fallback = True
+            else:
+                raise LookupError(f'需同一个采集小时的唯一 {side} 原生案卷，现有 0 份')
     reads = [(case.get('build') or {}).get('built_at_ms') for case in candidates]
     if any(type(t) is not int for t in reads):
         raise LookupError('案卷构建时间无效')
@@ -774,8 +845,18 @@ class Dossiers:
                                         and 'require_outside_at_t0' not in condition_plan):
                                     plan_to_check = dict(condition_plan, require_outside_at_t0=True)
                                 try:
+                                    prior_repairs = (
+                                        eff_cv.get('lossless_repairs')
+                                        if isinstance(eff_cv, dict) and isinstance(eff_cv.get('lossless_repairs'), list)
+                                        else None
+                                    )
                                     eff_cv = review_mod.validate_initial_reply_contract(
-                                        {'raw_text': raw.decode('utf-8'), 'decision': judgment, 'condition_plan': plan_to_check},
+                                        {
+                                            'raw_text': raw.decode('utf-8'),
+                                            'decision': judgment,
+                                            'condition_plan': plan_to_check,
+                                            **({'lossless_repairs': prior_repairs} if prior_repairs else {}),
+                                        },
                                         contracts_pair,
                                         strict_clock_5m=True,
                                         check_excerpt_completeness=True,

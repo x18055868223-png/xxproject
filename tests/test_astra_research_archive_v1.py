@@ -617,3 +617,105 @@ def test_backfill_slot_cases_rejects_invalid_expiry_hash_skew_and_window(tmp_pat
         ar.backfill_slot_cases(tmp_path / "e5", {"put": late_put, "call": late_call}, slot_ms=slot_16, target_expiry_ms=EXPIRY, now_ms=fresh_now)
     assert not list((tmp_path / "e5" / "cases" / "2026-10-19").glob("16_call_*.json.gz"))
     assert arch_skew.verify() == {"ok": True, "entries": 1, "problems": []}
+
+
+def _dual_view(*, put_sid: str = "a" * 64, call_sid: str | None = "b" * 64, capture_state: str = "COMPLETE"):
+    base = _view(sid=put_sid)
+    cands = list(base["candidates"])
+    if call_sid is not None:
+        cands.append({
+            "side": "call",
+            "snapshot": {
+                "snapshot_id": call_sid,
+                "contract": {
+                    "side": "call",
+                    "short_instrument": "BTC-20OCT26-84500-C",
+                    "long_instrument": "BTC-20OCT26-86500-C",
+                    "short_strike_usd": 84500.0,
+                    "long_strike_usd": 86500.0,
+                    "expiry_ms": EXPIRY,
+                },
+            },
+        })
+    return {**base, "candidates": cands, "discovery_status": {"capture_state": capture_state}}
+
+
+def test_complete_single_side_defers_early_and_writes_pair_or_lone_at_20(tmp_path):
+    M = 60_000
+    slot_16 = EXPIRY - 16 * H
+
+    # Branch 1: COMPLETE with 1 displayed side defers at :00/:05, then writes both cleanly when Call joins at :10
+    arch_pair = ar.Archive(tmp_path / "pair_recovery")
+    single_complete = _dual_view(call_sid=None, capture_state="COMPLETE")
+    r00 = _tick(arch_pair, slot_16, single_complete, FakeDeribit())
+    r05 = _tick(arch_pair, slot_16 + 5 * M, single_complete, FakeDeribit())
+    assert r00["cases"] == 0 and r05["cases"] == 0
+    assert not list((tmp_path / "pair_recovery" / "cases").glob("*/*.json.gz"))
+
+    r10 = _tick(arch_pair, slot_16 + 10 * M, _dual_view(capture_state="COMPLETE"), FakeDeribit())
+    assert r10["cases"] == 2
+    assert len(list((tmp_path / "pair_recovery" / "cases" / "2026-10-19").glob("16_put_*.json.gz"))) == 1
+    assert len(list((tmp_path / "pair_recovery" / "cases" / "2026-10-19").glob("16_call_*.json.gz"))) == 1
+    assert arch_pair.verify()["ok"] is True
+
+    # Branch 2: COMPLETE with 1 displayed side at :00 and :10 defers, then writes the lone side at :20
+    arch_lone = ar.Archive(tmp_path / "still_single")
+    assert _tick(arch_lone, slot_16, single_complete, FakeDeribit())["cases"] == 0
+    assert _tick(arch_lone, slot_16 + 10 * M, single_complete, FakeDeribit())["cases"] == 0
+    assert not list((tmp_path / "still_single" / "cases").glob("*/*.json.gz"))
+    r20 = _tick(arch_lone, slot_16 + 20 * M, single_complete, FakeDeribit())
+    assert r20["cases"] == 1
+    assert len(list((tmp_path / "still_single" / "cases" / "2026-10-19").glob("16_put_*.json.gz"))) == 1
+    assert arch_lone.verify()["ok"] is True
+
+
+def test_two_displayed_sides_with_fetch_case_error_defers_at_05_without_poisoning_slot(tmp_path):
+    M = 60_000
+    slot_16 = EXPIRY - 16 * H
+    arch = ar.Archive(tmp_path / "held_recovery")
+    held_call_sid = "h" * 64
+    live_call_sid = "c" * 64
+
+    def fetch_with_held_call(sid: str):
+        if sid == held_call_sid:
+            raise RuntimeError("409 quote_held_not_current")
+        return _case(sid)
+
+    # At :05 (< 15m), Call raises quote_held_not_current -> lone surviving Put is deferred and no case error recorded
+    r05 = ar.tick(
+        arch,
+        now_ms=slot_16 + 5 * M,
+        view=_dual_view(put_sid="p" * 64, call_sid=held_call_sid, capture_state="COMPLETE"),
+        fetch_case=fetch_with_held_call,
+        deribit=ar.Deribit(FakeDeribit()),
+    )
+    assert r05["cases"] == 0
+    assert not [e for e in r05["errors"] if e.get("step") == "case"]
+    assert not list((tmp_path / "held_recovery" / "cases").glob("*/*.json.gz"))
+
+    # At :10 (< 15m), Call snapshot refreshes -> both Put and Call write cleanly together
+    r10 = ar.tick(
+        arch,
+        now_ms=slot_16 + 10 * M,
+        view=_dual_view(put_sid="p" * 64, call_sid=live_call_sid, capture_state="COMPLETE"),
+        fetch_case=fetch_with_held_call,
+        deribit=ar.Deribit(FakeDeribit()),
+    )
+    assert r10["cases"] == 2
+    assert not [e for e in r10["errors"] if e.get("step") == "case"]
+    assert len(list((tmp_path / "held_recovery" / "cases" / "2026-10-19").glob("16_put_*.json.gz"))) == 1
+    assert len(list((tmp_path / "held_recovery" / "cases" / "2026-10-19").glob("16_call_*.json.gz"))) == 1
+    assert arch.verify()["ok"] is True
+
+    # If still failing at :20 (>= 15m), surviving Put writes and Call error is recorded
+    arch_late = ar.Archive(tmp_path / "held_late")
+    r20 = ar.tick(
+        arch_late,
+        now_ms=slot_16 + 20 * M,
+        view=_dual_view(put_sid="p" * 64, call_sid=held_call_sid, capture_state="COMPLETE"),
+        fetch_case=fetch_with_held_call,
+        deribit=ar.Deribit(FakeDeribit()),
+    )
+    assert r20["cases"] == 1
+    assert [e["side"] for e in r20["errors"] if e.get("step") == "case"] == ["call"]
+    assert arch_late.verify()["ok"] is True
