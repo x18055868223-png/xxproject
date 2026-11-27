@@ -29,6 +29,7 @@ import importlib
 import json
 import math
 import os
+import re
 import time
 import urllib.parse
 import zlib
@@ -1398,12 +1399,12 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
     day = hour[:10]
     new_cases: list[tuple[str, Mapping[str, Any]]] = []
     # Defer early-hour case freeze when workbench capture is PARTIAL (<2 sides) inside
-    # the first 25m so a recovering partner later in the hour does not fail the 60s pair skew limit.
+    # the first 15m so a recovering partner later in the hour does not fail the 60s pair skew limit.
     disc_state = str(((view or {}).get("discovery_status") or {}).get("capture_state") or "").upper()
     defer_partial_single_side = (
         disc_state == "PARTIAL"
         and len({item.get("side") for item in displayed.values() if item.get("side") in {"put", "call"}}) < 2
-        and (now_ms % HOUR_MS) < 25 * 60_000
+        and (now_ms % HOUR_MS) < 15 * 60_000
     )
     if not defer_partial_single_side:
         for key, item in displayed.items():
@@ -1413,7 +1414,7 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
                 continue
             try:
                 case = fetch_case(snap["snapshot_id"])
-                data = gzip.compress(json.dumps(case, ensure_ascii=False, sort_keys=True).encode("utf-8"), mtime=0)
+                data = _gzip_json(case)
                 rel = f"cases/{day}/{hour[11:]}_{side}_{case['case_id']}.json.gz"
                 archive.write_new(rel, data, at_ms=now_ms, kind="case")
                 credit = (case_entry(case, "L1.economics") or {}).get("net_credit_after_fee_btc")
@@ -1716,6 +1717,286 @@ def case_entry(case: Mapping[str, Any], ref: str) -> Any:
     if not at:
         return None
     return case["layers"][at["layer"]][at["index"]].get("values")
+
+
+def _raw_case_layer_entry(case: Mapping[str, Any], ref: str) -> Mapping[str, Any] | None:
+    at = (case.get("refs") or {}).get(ref)
+    if not isinstance(at, Mapping):
+        return None
+    try:
+        entry = case["layers"][at["layer"]][at["index"]]
+    except (KeyError, IndexError, TypeError):
+        return None
+    return entry if isinstance(entry, Mapping) else None
+
+
+def _is_strict_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _gzip_json(payload: Mapping[str, Any]) -> bytes:
+    return gzip.compress(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8"), mtime=0)
+
+
+def _canonical_case_content_sha256(case: Mapping[str, Any]) -> str:
+    body = {k: v for k, v in case.items() if k != "build"}
+    encoded = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+@contextmanager
+def _file_lock(lock_path: Path | str):
+    lock = Path(lock_path)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+    except (FileExistsError, PermissionError) as exc:
+        raise BlockingIOError("tick.lock busy") from exc
+    try:
+        yield
+    finally:
+        try:
+            os.close(fd)
+        finally:
+            lock.unlink(missing_ok=True)
+
+
+@contextmanager
+def _acquire_lock_with_retry(lock_path: Path, *, timeout_s: float = 2.0, poll_s: float = 0.1):
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    step = max(0.01, float(poll_s))
+    while True:
+        try:
+            cm = _file_lock(lock_path)
+            cm.__enter__()
+            break
+        except (BlockingIOError, PermissionError, FileExistsError):
+            if time.monotonic() >= deadline:
+                yield False
+                return
+            time.sleep(min(step, max(0.0, deadline - time.monotonic())))
+    try:
+        yield True
+    finally:
+        cm.__exit__(None, None, None)
+
+
+def backfill_slot_cases(
+    archive_root: Path | str,
+    cases_by_side: Mapping[str, Mapping[str, Any]],
+    *,
+    slot_ms: int,
+    target_expiry_ms: int,
+    now_ms: int | None = None,
+    lock_timeout_s: float = 2.0,
+    lock_poll_s: float = 0.1,
+) -> dict[str, Any]:
+    """Idempotently persist a verified Put/Call case pair for a scheduled UTC hour slot."""
+    if not _is_strict_int(slot_ms) or not _is_strict_int(target_expiry_ms):
+        raise ValueError("slot_ms and target_expiry_ms must be integers")
+    if now_ms is not None and not _is_strict_int(now_ms):
+        raise ValueError("now_ms must be an integer when provided")
+    eff_now = int(time.time() * 1000) if now_ms is None else now_ms
+    if not isinstance(cases_by_side, Mapping) or not all(
+        isinstance(cases_by_side.get(s), Mapping) for s in ("put", "call")
+    ):
+        raise ValueError("cases_by_side must contain both 'put' and 'call' case mappings")
+
+    validated: dict[str, dict[str, Any]] = {}
+    built_by_side: dict[str, int] = {}
+    val_ts_by_side: dict[str, int] = {}
+    contracts_by_side: dict[str, Mapping[str, Any]] = {}
+    for side in ("put", "call"):
+        case = dict(cases_by_side[side])
+        case_id = case.get("case_id")
+        if not isinstance(case_id, str) or not re.fullmatch(r"cf_[A-Za-z0-9_-]+", case_id):
+            raise ValueError(f"invalid {side} case_id")
+        build = case.get("build")
+        if not isinstance(build, Mapping):
+            raise ValueError(f"missing {side} build metadata")
+        built_ms = build.get("built_at_ms")
+        if not _is_strict_int(built_ms) or not (slot_ms <= built_ms <= eff_now):
+            raise ValueError(f"{side} built_at_ms outside [slot_ms, now_ms]")
+        asof_ms = case.get("asof_ms")
+        if (
+            not _is_strict_int(asof_ms)
+            or not (0 <= (built_ms - asof_ms) <= 180_000)
+            or asof_ms < (slot_ms - 180_000)
+            or (eff_now - asof_ms) > 180_000
+        ):
+            raise ValueError(f"{side} asof_ms stale (>180s) or outside slot window")
+        content_sha = build.get("content_sha256")
+        if not isinstance(content_sha, str) or content_sha != _canonical_case_content_sha256(case):
+            raise ValueError(f"{side} content_sha256 mismatch")
+        contract = case_entry(case, "L1.contract")
+        if not isinstance(contract, Mapping):
+            raise ValueError(f"missing {side} L1.contract")
+        if contract.get("side") != side:
+            raise ValueError(f"{side} L1.contract side mismatch")
+        if not _is_strict_int(contract.get("expiry_ms")) or contract["expiry_ms"] != target_expiry_ms:
+            raise ValueError(f"{side} L1.contract expiry_ms mismatch")
+        short_inst = contract.get("short_instrument")
+        long_inst = contract.get("long_instrument")
+        if (
+            not isinstance(short_inst, str)
+            or not short_inst.strip()
+            or not isinstance(long_inst, str)
+            or not long_inst.strip()
+        ):
+            raise ValueError(f"missing {side} contract instruments")
+        quote = case_entry(case, "L2.quote")
+        if not isinstance(quote, Mapping):
+            raise ValueError(f"missing {side} L2.quote")
+        q_credit = _num(quote.get("credit_btc"))
+        if q_credit is None or q_credit <= 0:
+            raise ValueError(f"{side} L2.quote missing positive credit_btc")
+        if (quote.get("gap_reasons") or []) or (quote.get("quote_gap_reasons") or []):
+            raise ValueError(f"{side} L2.quote contains gap_reasons")
+        q_val_ts = quote.get("valuation_ts_ms")
+        if (
+            not _is_strict_int(q_val_ts)
+            or not (0 <= (built_ms - q_val_ts) <= 180_000)
+            or q_val_ts < (slot_ms - 180_000)
+            or (eff_now - q_val_ts) > 180_000
+        ):
+            raise ValueError(f"{side} L2.quote valuation_ts_ms stale (>180s) or outside slot window")
+        l3_raw = _raw_case_layer_entry(case, "L3.expiry_walls")
+        l3_vals = l3_raw.get("values") if isinstance(l3_raw, Mapping) else None
+        l3_asof = l3_raw.get("asof_ms") if isinstance(l3_raw, Mapping) else None
+        l3_pin = _num((l3_vals.get("walls") or {}).get("pin")) if isinstance(l3_vals, Mapping) and isinstance(l3_vals.get("walls"), Mapping) else None
+        if (
+            not isinstance(l3_raw, Mapping)
+            or l3_raw.get("quality") in {"missing", "unknown", "stale"}
+            or not _is_strict_int(l3_asof)
+            or not (0 <= (built_ms - l3_asof) <= 5 * 60_000)
+            or not isinstance(l3_vals, Mapping)
+            or l3_vals.get("expiry_ms") != target_expiry_ms
+            or l3_vals.get("stale") is True
+            or l3_pin is None
+            or l3_pin <= 0
+        ):
+            raise ValueError(f"{side} L3.expiry_walls missing or stale (>5m)")
+        validated[side] = case
+        built_by_side[side] = built_ms
+        val_ts_by_side[side] = q_val_ts
+        contracts_by_side[side] = contract
+
+    if abs(built_by_side["put"] - built_by_side["call"]) > 60_000:
+        raise ValueError("pair built_at_ms skew exceeds 60s")
+    if abs(val_ts_by_side["put"] - val_ts_by_side["call"]) > 60_000:
+        raise ValueError("pair valuation_ts_ms skew exceeds 60s")
+
+    slot_dt = _utc(slot_ms)
+    day = slot_dt.strftime("%Y-%m-%d")
+    hh = slot_dt.strftime("%H")
+    root = Path(archive_root)
+    lock_path = root / "_state" / "tick.lock"
+
+    with _acquire_lock_with_retry(lock_path, timeout_s=lock_timeout_s, poll_s=lock_poll_s) as acquired:
+        if not acquired:
+            return {
+                "ok": True,
+                "persisted": False,
+                "lock_busy": True,
+                "cases": [dict(validated["put"]), dict(validated["call"])],
+            }
+        archive = Archive(root)
+        state = archive.load_state()
+        state.setdefault("cases", {})
+        case_dir = root / "cases" / day
+        existing_by_side: dict[str, tuple[dict[str, Any], str, Mapping[str, Any], int] | None] = {}
+        for side in ("put", "call"):
+            matches = sorted(case_dir.glob(f"{hh}_{side}_*.json.gz")) if case_dir.is_dir() else []
+            if len(matches) > 1:
+                raise ValueError(f"multiple existing {side} cases on disk for {day}T{hh}")
+            if len(matches) == 1:
+                disk_path = matches[0]
+                disk_rel = disk_path.relative_to(root).as_posix()
+                disk_case = json.loads(gzip.decompress(disk_path.read_bytes()).decode("utf-8"))
+                if not isinstance(disk_case, dict):
+                    raise ValueError(f"corrupt existing {side} case on disk")
+                disk_contract = case_entry(disk_case, "L1.contract")
+                if not isinstance(disk_contract, Mapping):
+                    raise ValueError(f"existing {side} case missing L1.contract")
+                if disk_contract.get("side") != side:
+                    raise ValueError(f"existing {side} case side mismatch")
+                if not _is_strict_int(disk_contract.get("expiry_ms")) or disk_contract["expiry_ms"] != target_expiry_ms:
+                    raise ValueError(f"existing {side} case expiry_ms mismatch")
+                if not disk_contract.get("short_instrument") or not disk_contract.get("long_instrument"):
+                    raise ValueError(f"existing {side} case missing instruments")
+                disk_built = (disk_case.get("build") or {}).get("built_at_ms")
+                if not _is_strict_int(disk_built) or not (slot_ms <= disk_built <= eff_now):
+                    raise ValueError(f"existing {side} case built_at_ms outside [slot_ms, now_ms]")
+                disk_quote = case_entry(disk_case, "L2.quote")
+                disk_val_ts = (
+                    disk_quote.get("valuation_ts_ms")
+                    if isinstance(disk_quote, Mapping) and _is_strict_int(disk_quote.get("valuation_ts_ms"))
+                    else disk_case.get("asof_ms")
+                )
+                if not _is_strict_int(disk_val_ts) or not (0 <= (disk_built - disk_val_ts) <= 180_000) or disk_val_ts < (slot_ms - 180_000):
+                    raise ValueError(f"existing {side} case valuation_ts_ms stale or outside slot window")
+                existing_by_side[side] = (disk_case, disk_rel, disk_contract, disk_built, disk_val_ts)
+            else:
+                existing_by_side[side] = None
+
+        final_put_built = existing_by_side["put"][3] if existing_by_side["put"] else built_by_side["put"]
+        final_call_built = existing_by_side["call"][3] if existing_by_side["call"] else built_by_side["call"]
+        if abs(final_put_built - final_call_built) > 60_000:
+            raise ValueError("final pair built_at_ms skew with existing disk case exceeds 60s")
+        final_put_val = existing_by_side["put"][4] if existing_by_side["put"] else val_ts_by_side["put"]
+        final_call_val = existing_by_side["call"][4] if existing_by_side["call"] else val_ts_by_side["call"]
+        if abs(final_put_val - final_call_val) > 60_000:
+            raise ValueError("final pair valuation_ts_ms skew with existing disk case exceeds 60s")
+
+        wrote_sides: list[str] = []
+        final_cases: dict[str, dict[str, Any]] = {}
+        state_dirty = False
+        for side in ("put", "call"):
+            slot_key = f"{day}T{hh}|{side}"
+            existing_entry = existing_by_side[side]
+            if existing_entry is not None:
+                disk_case, disk_rel, disk_contract, _, _ = existing_entry
+                final_cases[side] = disk_case
+                if slot_key not in state["cases"]:
+                    state["cases"][slot_key] = {
+                        "case_id": disk_case["case_id"],
+                        "contract_key": f"{disk_contract['short_instrument']}|{disk_contract['long_instrument']}",
+                        "path": disk_rel,
+                    }
+                    state_dirty = True
+                continue
+            case = validated[side]
+            c = contracts_by_side[side]
+            ckey = f"{c['short_instrument']}|{c['long_instrument']}"
+            rel = f"cases/{day}/{hh}_{side}_{case['case_id']}.json.gz"
+            archive.write_new(rel, _gzip_json(case), at_ms=eff_now, kind="case")
+            state["cases"][slot_key] = {
+                "case_id": case["case_id"],
+                "contract_key": ckey,
+                "path": rel,
+            }
+            if ckey in (state.get("contracts") or {}):
+                rec_cases = state["contracts"][ckey].setdefault("cases", [])
+                if not any(rc.get("case_id") == case["case_id"] for rc in rec_cases if isinstance(rc, Mapping)):
+                    credit = (case_entry(case, "L1.economics") or {}).get("net_credit_after_fee_btc")
+                    rec_cases.append({
+                        "case_id": case["case_id"],
+                        "asof_ms": case.get("asof_ms"),
+                        "net_credit_after_fee_btc": credit,
+                        "path": rel,
+                    })
+            wrote_sides.append(side)
+            final_cases[side] = case
+            state_dirty = True
+        if wrote_sides or state_dirty:
+            archive.save_state(state)
+        return {
+            "ok": True,
+            "persisted": True,
+            "lock_busy": False,
+            "wrote_sides": wrote_sides,
+            "cases": [final_cases["put"], final_cases["call"]],
+        }
 
 
 def _workbench_decisions(workbench_dir: Path) -> tuple[list[Any], list[Any]]:

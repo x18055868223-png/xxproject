@@ -370,3 +370,250 @@ def test_tick_prunes_player_state_to_1500_sorted_keys(tmp_path):
     pruned = archive.load_state()["player"]
     assert len(pruned) == 1500
     assert min(pruned) > "2026-01-01T00|put"
+
+
+def _native_built_case(
+    side: str,
+    *,
+    built_at_ms: int,
+    expiry_ms: int = EXPIRY,
+    sid_char: str | None = None,
+    credit_btc: float | None = 0.008,
+    quote_gaps: list[str] | None = None,
+    valuation_ts_ms: int | None = None,
+    l3_computed_at_ms: int | None = None,
+):
+    import astra_case_file_v1 as cf
+    import astra_expiry_gamma_v1 as eg
+
+    ch = sid_char or ("p" if side == "put" else "c")
+    sid = (ch * 64)[:64]
+    short_inst = "BTC-20OCT26-81500-P" if side == "put" else "BTC-20OCT26-84500-C"
+    long_inst = "BTC-20OCT26-79500-P" if side == "put" else "BTC-20OCT26-86500-C"
+    ks = 81500.0 if side == "put" else 84500.0
+    kl = 79500.0 if side == "put" else 86500.0
+    val_ts = (built_at_ms - 5_000) if valuation_ts_ms is None else valuation_ts_ms
+    l3_ts = (built_at_ms - 5_000) if l3_computed_at_ms is None else l3_computed_at_ms
+    exp_code = eg.expiry_code(expiry_ms)
+    return cf.build(
+        snapshot={
+            "snapshot_id": sid,
+            "candidate_id": f"cand_{side}",
+            "contract": {
+                "side": side,
+                "venue": "Deribit",
+                "underlying": "BTC",
+                "settlement_currency": "BTC",
+                "short_instrument": short_inst,
+                "long_instrument": long_inst,
+                "short_strike_usd": ks,
+                "long_strike_usd": kl,
+                "width_usd": 2000.0,
+                "quantity_btc": 1.0,
+                "expiry_ms": expiry_ms,
+            },
+            "market": {
+                "valuation_ts_ms": val_ts,
+                "quote": {
+                    "credit_btc": credit_btc,
+                    "valuation_ts_ms": val_ts,
+                    "gap_reasons": list(quote_gaps or []),
+                },
+            },
+        },
+        raw_market={},
+        asof_ms=val_ts,
+        item=None,
+        view={
+            "expiry_gamma": {
+                "status": "ok",
+                "computed_at_ms": l3_ts,
+                "by_expiry": {
+                    exp_code: {
+                        "expiry": exp_code,
+                        "expiry_ms": expiry_ms,
+                        "computed_at_ms": l3_ts,
+                        "stale": False,
+                        "atm_iv_pct": 52.0,
+                        "expected_move_usd": 1400.0,
+                        "walls": {"pin": 83000.0},
+                    }
+                },
+            }
+        },
+        built_at_ms=built_at_ms,
+    )
+
+
+def test_partial_single_side_defers_at_05_and_10_then_archives_at_20(tmp_path):
+    M = 60_000
+    slot_16 = EXPIRY - 16 * H  # 16:00 UTC
+    archive = ar.Archive(tmp_path)
+    partial_view = {**_view(), "discovery_status": {"capture_state": "PARTIAL"}}
+
+    # :05 and :10 (< 15m) defer freezing the lone Put candidate
+    r05 = _tick(archive, slot_16 + 5 * M, partial_view, FakeDeribit())
+    r10 = _tick(archive, slot_16 + 10 * M, partial_view, FakeDeribit())
+    assert r05["cases"] == 0 and r10["cases"] == 0
+    assert not list((tmp_path / "cases").glob("*/*.json.gz"))
+
+    # :20 (>= 15m) archives the surviving single side before the 30m window closes
+    r20 = _tick(archive, slot_16 + 20 * M, partial_view, FakeDeribit())
+    assert r20["cases"] == 1
+    written = list((tmp_path / "cases").glob("2026-10-19/16_put_*.json.gz"))
+    assert len(written) == 1
+    assert archive.verify()["ok"] is True
+
+
+def test_backfill_slot_cases_hash_chain_idempotency_adoption_and_lock_busy(tmp_path):
+    M = 60_000
+    slot_16 = EXPIRY - 16 * H
+    now_ms = slot_16 + 2 * M
+    put_case = _native_built_case("put", built_at_ms=slot_16 + 15_000, sid_char="a")
+    call_case = _native_built_case("call", built_at_ms=slot_16 + 25_000, sid_char="b")
+
+    # 1. Fresh archive backfill writes both cases into chain.jsonl and passes verify()
+    res1 = ar.backfill_slot_cases(
+        tmp_path / "arch1",
+        {"put": put_case, "call": call_case},
+        slot_ms=slot_16,
+        target_expiry_ms=EXPIRY,
+        now_ms=now_ms,
+    )
+    assert res1["ok"] is True and res1["persisted"] is True and res1["lock_busy"] is False
+    assert res1["wrote_sides"] == ["put", "call"]
+    arch1 = ar.Archive(tmp_path / "arch1")
+    v1 = arch1.verify()
+    assert v1 == {"ok": True, "entries": 2, "problems": []}
+
+    # 2. Second call is 100% idempotent (wrote_sides == [], chain entries unchanged, 1 file per side)
+    alt_put = _native_built_case("put", built_at_ms=slot_16 + 30_000, sid_char="c")
+    alt_call = _native_built_case("call", built_at_ms=slot_16 + 35_000, sid_char="d")
+    res2 = ar.backfill_slot_cases(
+        tmp_path / "arch1",
+        {"put": alt_put, "call": alt_call},
+        slot_ms=slot_16,
+        target_expiry_ms=EXPIRY,
+        now_ms=now_ms + 30_000,
+    )
+    assert res2["ok"] is True and res2["persisted"] is True and res2["wrote_sides"] == []
+    assert [c["case_id"] for c in res2["cases"]] == [put_case["case_id"], call_case["case_id"]]
+    assert arch1.verify() == {"ok": True, "entries": 2, "problems": []}
+    assert len(list((tmp_path / "arch1" / "cases" / "2026-10-19").glob("16_put_*.json.gz"))) == 1
+    assert len(list((tmp_path / "arch1" / "cases" / "2026-10-19").glob("16_call_*.json.gz"))) == 1
+
+    # 3. Single-side adoption when 1 native side is already on disk
+    arch2_dir = tmp_path / "arch2"
+    arch2 = ar.Archive(arch2_dir)
+    disk_put = _native_built_case("put", built_at_ms=slot_16 + 10_000, sid_char="e")
+    arch2.write_new(
+        f"cases/2026-10-19/16_put_{disk_put['case_id']}.json.gz",
+        ar._gzip_json(disk_put),
+        at_ms=slot_16 + 12_000,
+        kind="case",
+    )
+    res_adopt = ar.backfill_slot_cases(
+        arch2_dir,
+        {"put": put_case, "call": call_case},
+        slot_ms=slot_16,
+        target_expiry_ms=EXPIRY,
+        now_ms=now_ms,
+    )
+    assert res_adopt["wrote_sides"] == ["call"]
+    assert [c["case_id"] for c in res_adopt["cases"]] == [disk_put["case_id"], call_case["case_id"]]
+    assert len(list((arch2_dir / "cases" / "2026-10-19").glob("16_put_*.json.gz"))) == 1
+    assert arch2.verify() == {"ok": True, "entries": 2, "problems": []}
+
+    # 4. Graceful lock_busy=True when tick.lock is held, without touching _state/state.json or chain.jsonl
+    busy_dir = tmp_path / "arch_busy"
+    with ar._file_lock(busy_dir / "_state" / "tick.lock"):
+        busy_res = ar.backfill_slot_cases(
+            busy_dir,
+            {"put": put_case, "call": call_case},
+            slot_ms=slot_16,
+            target_expiry_ms=EXPIRY,
+            now_ms=now_ms,
+            lock_timeout_s=0.15,
+            lock_poll_s=0.05,
+        )
+        assert busy_res == {
+            "ok": True,
+            "persisted": False,
+            "lock_busy": True,
+            "cases": [put_case, call_case],
+        }
+        assert not (busy_dir / "chain.jsonl").exists()
+        assert not (busy_dir / "_state" / "state.json").exists()
+        assert (busy_dir / "_state" / "tick.lock").exists()
+    # After lock release, tick.lock is cleaned up and backfill persists cleanly
+    assert not (busy_dir / "_state" / "tick.lock").exists()
+    after_busy = ar.backfill_slot_cases(
+        busy_dir,
+        {"put": put_case, "call": call_case},
+        slot_ms=slot_16,
+        target_expiry_ms=EXPIRY,
+        now_ms=now_ms,
+    )
+    assert after_busy["persisted"] is True and after_busy["wrote_sides"] == ["put", "call"]
+    assert ar.Archive(busy_dir).verify()["ok"] is True
+
+
+def test_backfill_slot_cases_rejects_invalid_expiry_hash_skew_and_window(tmp_path):
+    M = 60_000
+    slot_16 = EXPIRY - 16 * H
+    now_ms = slot_16 + 130_000
+    put_ok = _native_built_case("put", built_at_ms=slot_16 + 20_000, sid_char="1")
+    call_ok = _native_built_case("call", built_at_ms=slot_16 + 30_000, sid_char="2")
+
+    # Wrong expiry_ms
+    bad_exp = _native_built_case("call", built_at_ms=slot_16 + 30_000, expiry_ms=EXPIRY + 24 * H, sid_char="3")
+    with pytest.raises(ValueError, match="expiry_ms"):
+        ar.backfill_slot_cases(tmp_path / "e1", {"put": put_ok, "call": bad_exp}, slot_ms=slot_16, target_expiry_ms=EXPIRY, now_ms=now_ms)
+
+    # Tampered content_sha256 / payload mutation
+    tampered = json.loads(json.dumps(call_ok))
+    tampered["contract_cn"] = "forged"
+    with pytest.raises(ValueError, match="content_sha256"):
+        ar.backfill_slot_cases(tmp_path / "e2", {"put": put_ok, "call": tampered}, slot_ms=slot_16, target_expiry_ms=EXPIRY, now_ms=now_ms)
+
+    # Pair skew > 60s
+    skew_call = _native_built_case("call", built_at_ms=slot_16 + 85_000, sid_char="4")
+    with pytest.raises(ValueError, match="skew"):
+        ar.backfill_slot_cases(tmp_path / "e3", {"put": put_ok, "call": skew_call}, slot_ms=slot_16, target_expiry_ms=EXPIRY, now_ms=now_ms)
+
+    # Pre-slot_ms built_at_ms
+    pre_slot_put = _native_built_case("put", built_at_ms=slot_16 - 1_000, sid_char="5")
+    with pytest.raises(ValueError, match="built_at_ms"):
+        ar.backfill_slot_cases(tmp_path / "e4", {"put": pre_slot_put, "call": call_ok}, slot_ms=slot_16, target_expiry_ms=EXPIRY, now_ms=now_ms)
+
+    # Note: 5m = 300_000ms now_ms vs slot_16+20s (280s > 180s QUOTE_HOLD_MS) must reject stale valuation_ts_ms!
+    with pytest.raises(ValueError, match="stale"):
+        ar.backfill_slot_cases(tmp_path / "e4_stale", {"put": put_ok, "call": call_ok}, slot_ms=slot_16, target_expiry_ms=EXPIRY, now_ms=slot_16 + 205_000)
+
+    # Fresh now_ms within 180s for remaining structural tests
+    fresh_now = slot_16 + 130_000
+
+    # Unpriced / gapped L2.quote (credit_btc=None or gap_reasons) rejected
+    no_credit_call = _native_built_case("call", built_at_ms=slot_16 + 30_000, sid_char="9", credit_btc=None)
+    with pytest.raises(ValueError, match="credit_btc"):
+        ar.backfill_slot_cases(tmp_path / "e_nocred", {"put": put_ok, "call": no_credit_call}, slot_ms=slot_16, target_expiry_ms=EXPIRY, now_ms=fresh_now)
+
+    gapped_call = _native_built_case("call", built_at_ms=slot_16 + 30_000, sid_char="g", quote_gaps=["short_depth_insufficient"])
+    with pytest.raises(ValueError, match="gap_reasons"):
+        ar.backfill_slot_cases(tmp_path / "e_gap", {"put": put_ok, "call": gapped_call}, slot_ms=slot_16, target_expiry_ms=EXPIRY, now_ms=fresh_now)
+
+    # L3.expiry_walls > 5m old (e.g., 6m old while < 20m STALE_MS) rejected before poisoning archive slot
+    stale_l3_call = _native_built_case("call", built_at_ms=slot_16 + 30_000, sid_char="w", l3_computed_at_ms=slot_16 - 340_000)
+    with pytest.raises(ValueError, match="L3.expiry_walls"):
+        ar.backfill_slot_cases(tmp_path / "e_l3", {"put": put_ok, "call": stale_l3_call}, slot_ms=slot_16, target_expiry_ms=EXPIRY, now_ms=fresh_now)
+
+    # Existing disk case + new partner skew > 60s fails BEFORE writing partner
+    arch_skew = ar.Archive(tmp_path / "e5")
+    early_put = _native_built_case("put", built_at_ms=slot_16 + 5_000, valuation_ts_ms=slot_16 + 2_000, sid_char="6")
+    arch_skew.write_new(f"cases/2026-10-19/16_put_{early_put['case_id']}.json.gz", ar._gzip_json(early_put), at_ms=slot_16 + 6_000, kind="case")
+    late_put = _native_built_case("put", built_at_ms=slot_16 + 120_000, valuation_ts_ms=slot_16 + 118_000, sid_char="7")
+    late_call = _native_built_case("call", built_at_ms=slot_16 + 125_000, valuation_ts_ms=slot_16 + 122_000, sid_char="8")
+    with pytest.raises(ValueError, match="skew"):
+        ar.backfill_slot_cases(tmp_path / "e5", {"put": late_put, "call": late_call}, slot_ms=slot_16, target_expiry_ms=EXPIRY, now_ms=fresh_now)
+    assert not list((tmp_path / "e5" / "cases" / "2026-10-19").glob("16_call_*.json.gz"))
+    assert arch_skew.verify() == {"ok": True, "entries": 1, "problems": []}

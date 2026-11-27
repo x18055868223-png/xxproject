@@ -173,9 +173,11 @@ def _classify_short_delta(
     max_age_ms: int,
     max_abs: float,
     failed_names: set[str] | frozenset[str] = frozenset(),
+    allow_far_otm_zero_delta: bool = False,
 ) -> tuple[str, dict[str, Any] | None, list[str]]:
-    """Classify one structurally qualified short leg into four explicit categories:
-    `verified_eligible`, `verified_above_max`, `delta_missing_or_invalid`, or `unacquired`.
+    """Classify one structurally qualified short leg into explicit categories:
+    `verified_eligible`, `verified_above_max`, `verified_far_otm_zero`,
+    `delta_missing_or_invalid`, or `unacquired`.
     """
     name = raw.get("instrument_name")
     if (isinstance(name, str) and name in failed_names) or raw.get("_delta_capture_error"):
@@ -202,16 +204,30 @@ def _classify_short_delta(
     elif observed > captured_ts_ms or captured_ts_ms - observed > max_age_ms:
         reasons.append("short_delta_stale_or_future")
     above_max = False
+    is_far_otm_zero = False
     if delta is not None:
         side = raw.get("option_type")
-        if (side == "put" and delta >= 0) or (side == "call" and delta <= 0) or math.isclose(delta, 0.0, abs_tol=1e-12):
-            reasons.append("short_delta_sign_mismatch")
-        if abs(delta) > max_abs + 1e-12:
-            above_max = True
-            reasons.append("short_delta_abs_above_max")
+        is_zero = math.isclose(delta, 0.0, abs_tol=1e-12)
+        if is_zero and allow_far_otm_zero_delta and side in {"put", "call"}:
+            is_far_otm_zero = True
+        else:
+            if (side == "put" and delta >= 0) or (side == "call" and delta <= 0) or is_zero:
+                reasons.append("short_delta_sign_mismatch")
+            if abs(delta) > max_abs + 1e-12:
+                above_max = True
+                reasons.append("short_delta_abs_above_max")
     non_policy_reasons = [r for r in reasons if r != "short_delta_abs_above_max"]
     if non_policy_reasons or delta is None or observed is None:
         return "delta_missing_or_invalid", None, sorted(set(reasons))
+    if is_far_otm_zero:
+        return "verified_far_otm_zero", {
+            "delta": 0.0,
+            "abs_delta": 0.0,
+            "observed_at_ms": observed,
+            "source": str(raw.get("delta_source") or delta_source),
+            "max_age_ms": max_age_ms,
+            "max_abs": max_abs,
+        }, []
     detail = {
         "delta": delta,
         "abs_delta": abs(delta),
@@ -223,6 +239,83 @@ def _classify_short_delta(
     if above_max:
         return "verified_above_max", detail, ["short_delta_abs_above_max"]
     return "verified_eligible", detail, []
+
+
+class _SideTailTracker:
+    """Outward per-side state guarding rounded 0.0 deep-OTM deltas and far-tail pruning."""
+
+    def __init__(self, *, index_price: float | None, width_usd: float) -> None:
+        self.index_price = index_price if (index_price is not None and index_price > 0) else None
+        self.width_usd = width_usd
+        self.has_unacquired = False
+        self.has_invalid = False
+        self.verified_eligible_count = 0
+        self.low_wing_entered = False
+        self.last_abs_delta: float | None = None
+        self.low_delta_streak = 0
+        self.last_dist = -1.0
+        self.outward_monotonic = True
+        self.pruned = False
+
+    @property
+    def allow_far_otm_zero(self) -> bool:
+        return (
+            self.outward_monotonic
+            and not self.has_unacquired
+            and not self.has_invalid
+            and self.low_wing_entered
+        )
+
+    def observe(self, strike: float | None, category: str, detail: Mapping[str, Any] | None) -> None:
+        if self.index_price is not None and strike is not None:
+            dist = abs(strike - self.index_price)
+            if dist + 1e-9 < self.last_dist:
+                self.outward_monotonic = False
+                self.low_wing_entered = False
+                self.low_delta_streak = 0
+            self.last_dist = max(self.last_dist, dist)
+        if category == "unacquired":
+            self.has_unacquired = True
+            self.low_wing_entered = False
+            self.low_delta_streak = 0
+            return
+        if category == "delta_missing_or_invalid":
+            self.has_invalid = True
+            self.low_wing_entered = False
+            self.low_delta_streak = 0
+            return
+        if category == "verified_above_max":
+            abs_d = float((detail or {}).get("abs_delta") or 0.0)
+            self.low_wing_entered = False
+            self.low_delta_streak = 0
+            self.last_abs_delta = abs_d
+            return
+        if category not in {"verified_eligible", "verified_far_otm_zero"} or detail is None:
+            return
+        abs_d = float(detail["abs_delta"])
+        non_increasing = (self.last_abs_delta is None) or (abs_d <= self.last_abs_delta + 1e-12)
+        if category == "verified_eligible":
+            self.verified_eligible_count += 1
+            if 0.0 < abs_d <= 0.10 + 1e-12 and non_increasing:
+                self.low_wing_entered = True
+            else:
+                self.low_wing_entered = False
+        if abs_d <= 0.03 + 1e-12 and non_increasing:
+            self.low_delta_streak += 1
+        else:
+            self.low_delta_streak = 0
+        self.last_abs_delta = abs_d
+        if (
+            self.outward_monotonic
+            and not self.has_unacquired
+            and not self.has_invalid
+            and self.verified_eligible_count >= 1
+            and self.low_delta_streak >= 3
+            and self.index_price is not None
+            and strike is not None
+            and abs(strike - self.index_price) + 1e-9 >= max(3.0 * self.width_usd, 0.15 * self.index_price)
+        ):
+            self.pruned = True
 
 
 def _gap(side: str, reasons: list[str], *, expiry_ms: int | None,
@@ -275,6 +368,7 @@ def _discover_side(side: str, by_side: Mapping[str, Mapping[float, Mapping[str, 
                    failed_names: set[str] | frozenset[str] = frozenset()) -> dict[str, Any]:
     side_chain = by_side.get(side, {})
     empty_pop = {"total_qualified": 0, "verified_eligible": 0, "verified_above_max": 0,
+                 "verified_far_otm_zero": 0, "pruned_far_otm_count": 0, "pruned_far_otm_tail": [],
                  "delta_missing_or_invalid": [], "unacquired": [], "complete": False}
     if not side_chain:
         return _gap(side, ["side_chain_missing"], expiry_ms=selected_expiry_ms,
@@ -290,12 +384,16 @@ def _discover_side(side: str, by_side: Mapping[str, Mapping[float, Mapping[str, 
     if not short_strikes:
         return _gap(side, [missing_reason], expiry_ms=selected_expiry_ms,
                     remaining_hours=remaining_hours, delta_population=empty_pop)
+    short_strikes.sort(key=lambda s: (abs(s - index_price), s))
     rejected_reasons: list[str] = []
     unacquired: list[str] = []
     delta_missing_or_invalid: list[str] = []
+    pruned_far_otm_tail: list[str] = []
     verified_above_max = 0
+    verified_far_otm_zero = 0
     choices: list[tuple[float, float, float, float, Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]] = []
     qualified_count = 0
+    tracker = _SideTailTracker(index_price=index_price, width_usd=width_usd)
     for short_strike in short_strikes:
         short = side_chain[short_strike]
         long_strike = target_long_strike(short_strike)
@@ -307,10 +405,15 @@ def _discover_side(side: str, by_side: Mapping[str, Mapping[float, Mapping[str, 
             rejected_reasons.append("quantity_below_min_trade")
             continue
         qualified_count += 1
+        if tracker.pruned:
+            pruned_far_otm_tail.append(str(short["instrument_name"]))
+            continue
         category, delta, delta_reasons = _classify_short_delta(
             short, captured_ts_ms, max_age_ms=delta_max_age_ms, max_abs=delta_max_abs,
             failed_names=failed_names,
+            allow_far_otm_zero_delta=tracker.allow_far_otm_zero,
         )
+        tracker.observe(short_strike, category, delta)
         if category == "unacquired":
             unacquired.append(str(short["instrument_name"]))
             continue
@@ -322,6 +425,9 @@ def _discover_side(side: str, by_side: Mapping[str, Mapping[float, Mapping[str, 
             verified_above_max += 1
             rejected_reasons.extend(delta_reasons)
             continue
+        if category == "verified_far_otm_zero":
+            verified_far_otm_zero += 1
+            continue
         assert delta is not None
         # Tie order: closest to requested |delta|, then more conservative lower
         # |delta|, then closer-to-index strike, then numeric strike for stability.
@@ -332,6 +438,9 @@ def _discover_side(side: str, by_side: Mapping[str, Mapping[float, Mapping[str, 
         "total_qualified": qualified_count,
         "verified_eligible": len(choices),
         "verified_above_max": verified_above_max,
+        "verified_far_otm_zero": verified_far_otm_zero,
+        "pruned_far_otm_count": len(pruned_far_otm_tail),
+        "pruned_far_otm_tail": list(pruned_far_otm_tail),
         "delta_missing_or_invalid": sorted(delta_missing_or_invalid),
         "unacquired": sorted(unacquired),
         "complete": complete,
@@ -652,6 +761,8 @@ def _with_public_greeks(
     delta_max_age_ms: int = DEFAULT_DELTA_MAX_AGE_MS,
     delta_max_abs: float = DEFAULT_SHORT_DELTA_MAX_ABS,
     captured_ts_ms: int | None = None,
+    index_price: float | None = None,
+    width_usd: float = DEFAULT_WIDTH_USD,
     monotonic: Callable[[], float] | None = None,
     sleep: Callable[[float], None] | None = None,
 ) -> tuple[list[Any], dict[str, Any]]:
@@ -671,6 +782,7 @@ def _with_public_greeks(
             "wire_requests_retry": 0,
             "cache_hits": 0,
             "cache_hit_instruments": [],
+            "pruned_far_otm_instruments": [],
             "skipped_instruments": {},
             "rate_limit_hits": 0,
             "maintenance_hits": 0,
@@ -687,18 +799,53 @@ def _with_public_greeks(
             if isinstance(name, str) and name in short_set:
                 by_name[name] = item
 
-    order_list = [n for n in ordered_names if n in short_set] if ordered_names else sorted(short_set)
+    def _side_and_strike(item: Mapping[str, Any], name: str) -> tuple[str | None, float | None]:
+        side = item.get("option_type") if item.get("option_type") in {"put", "call"} else None
+        raw_strike = item.get("strike")
+        strike: float | None = None
+        if not isinstance(raw_strike, bool):
+            try:
+                val = float(raw_strike)
+                if math.isfinite(val) and val > 0:
+                    strike = val
+            except (TypeError, ValueError):
+                pass
+        if side is None or strike is None:
+            parsed = _named_expiry_ms(name)
+            if parsed is not None:
+                if strike is None:
+                    strike = parsed[1]
+                if side is None:
+                    side = parsed[2]
+        return side, strike
+
+    if ordered_names:
+        order_list = [n for n in ordered_names if n in short_set]
+    elif index_price is not None and index_price > 0:
+        def _sort_key(n: str) -> tuple[int, float, float, str]:
+            it = by_name.get(n) or {}
+            sd, st = _side_and_strike(it, n)
+            side_rank = 0 if sd == "put" else 1 if sd == "call" else 2
+            dist = abs(st - index_price) if st is not None else float("inf")
+            return (side_rank, dist, st if st is not None else float("inf"), n)
+
+        order_list = sorted(short_set, key=_sort_key)
+    else:
+        order_list = sorted(short_set)
+
     receipts: dict[str, int] = {}
     hashes: dict[str, str] = {}
     errors: dict[str, str] = {}
     retried: list[str] = []
     cache_hit_instruments: list[str] = []
+    pruned_far_otm_instruments: list[str] = []
     skipped_instruments: dict[str, str] = {}
     wire_initial = 0
     wire_retry = 0
     rate_limit_hits = 0
     maintenance_hits = 0
     abort_reason: str | None = None
+    abort_mark_reason: str = "rate_limit_cooldown"
     retry_after_ms: int | None = None
     deadline_mono = mono_fn() + max_round_s if max_round_s and max_round_s > 0 else None
     last_wire_mono: list[float | None] = [None]
@@ -719,18 +866,23 @@ def _with_public_greeks(
             return False, "round_deadline_exceeded"
         return True, None
 
-    def _mark_remaining(start_idx: int, reason_code: str) -> None:
-        for rem in wire_order[start_idx:]:
-            if rem not in receipts and rem not in cache_hit_set and rem not in errors:
-                errors[rem] = reason_code
-                skipped_instruments[rem] = reason_code
+    trackers: dict[str, _SideTailTracker] = {
+        "put": _SideTailTracker(index_price=index_price, width_usd=width_usd),
+        "call": _SideTailTracker(index_price=index_price, width_usd=width_usd),
+    }
+    aborted = False
 
-    cache_hit_set: set[str] = set()
-    if delta_cache_get is not None:
-        for name in order_list:
-            item = by_name.get(name)
-            if item is None:
-                continue
+    for name in order_list:
+        item = by_name.get(name)
+        if item is None:
+            continue
+        side, strike = _side_and_strike(item, name)
+        tracker = trackers.get(side) if side in {"put", "call"} else None
+        if tracker is not None and tracker.pruned:
+            pruned_far_otm_instruments.append(name)
+            continue
+
+        if delta_cache_get is not None:
             try:
                 cached = delta_cache_get(name)
             except Exception:
@@ -745,10 +897,14 @@ def _with_public_greeks(
                     int(captured_ts_ms) if isinstance(captured_ts_ms, int) else 0,
                     int(probe["delta_book_received_ms"]) if isinstance(probe["delta_book_received_ms"], int) else 0,
                 )
-                cat, _det, _rsn = _classify_short_delta(
-                    probe, check_ts, max_age_ms=delta_max_age_ms, max_abs=delta_max_abs,
+                cat, det, _rsn = _classify_short_delta(
+                    probe,
+                    check_ts,
+                    max_age_ms=delta_max_age_ms,
+                    max_abs=delta_max_abs,
+                    allow_far_otm_zero_delta=(tracker.allow_far_otm_zero if tracker is not None else False),
                 )
-                if cat in {"verified_eligible", "verified_above_max"}:
+                if cat in {"verified_eligible", "verified_above_max", "verified_far_otm_zero"}:
                     item["greeks"] = probe["greeks"]
                     item["delta_observed_at_ms"] = probe["delta_observed_at_ms"]
                     item["delta_source"] = probe["delta_source"]
@@ -759,22 +915,25 @@ def _with_public_greeks(
                     if isinstance(cached.get("response_hash"), str):
                         hashes[name] = cached["response_hash"]
                     cache_hit_instruments.append(name)
-                    cache_hit_set.add(name)
+                    if tracker is not None:
+                        tracker.observe(strike, cat, det)
+                    continue
 
-    wire_order = [name for name in order_list if name not in cache_hit_set]
-    for idx, name in enumerate(wire_order):
-        item = by_name.get(name)
-        if item is None:
+        if aborted:
+            errors.setdefault(name, abort_mark_reason)
+            skipped_instruments[name] = abort_mark_reason
+            if tracker is not None:
+                tracker.observe(strike, "unacquired", None)
             continue
 
-        aborted = False
+        succeeded = False
         for attempt in range(2):
             if attempt > 0 and retry_delay_s > 0:
                 if deadline_mono is not None and mono_fn() + retry_delay_s > deadline_mono:
                     errors.setdefault(name, "round_deadline_exceeded")
                     skipped_instruments[name] = "round_deadline_exceeded"
                     abort_reason = "round_deadline_exceeded"
-                    _mark_remaining(idx + 1, "round_deadline_exceeded")
+                    abort_mark_reason = "round_deadline_exceeded"
                     aborted = True
                     break
                 sleep_fn(retry_delay_s)
@@ -784,7 +943,7 @@ def _with_public_greeks(
                 errors.setdefault(name, reason)
                 skipped_instruments[name] = reason
                 abort_reason = reason
-                _mark_remaining(idx + 1, reason)
+                abort_mark_reason = reason
                 aborted = True
                 break
             if attempt == 0:
@@ -810,23 +969,29 @@ def _with_public_greeks(
                 errors.pop(name, None)
                 if attempt:
                     retried.append(name)
-                if delta_cache_put is not None:
-                    check_ts = max(receipt_ms, int(captured_ts_ms) if isinstance(captured_ts_ms, int) else 0)
-                    cat, _det, _rsn = _classify_short_delta(
-                        item, check_ts, max_age_ms=delta_max_age_ms, max_abs=delta_max_abs,
-                    )
-                    if cat in {"verified_eligible", "verified_above_max"}:
-                        try:
-                            delta_cache_put(name, {
-                                "instrument_name": name,
-                                "greeks": dict(greeks),
-                                "delta_observed_at_ms": item["delta_observed_at_ms"],
-                                "delta_source": item["delta_source"],
-                                "delta_book_received_ms": item["delta_book_received_ms"],
-                                "response_hash": hashes[name],
-                            })
-                        except Exception:
-                            pass
+                check_ts = max(receipt_ms, int(captured_ts_ms) if isinstance(captured_ts_ms, int) else 0)
+                cat, det, _rsn = _classify_short_delta(
+                    item,
+                    check_ts,
+                    max_age_ms=delta_max_age_ms,
+                    max_abs=delta_max_abs,
+                    allow_far_otm_zero_delta=(tracker.allow_far_otm_zero if tracker is not None else False),
+                )
+                if delta_cache_put is not None and cat in {"verified_eligible", "verified_above_max", "verified_far_otm_zero"}:
+                    try:
+                        delta_cache_put(name, {
+                            "instrument_name": name,
+                            "greeks": dict(greeks),
+                            "delta_observed_at_ms": item["delta_observed_at_ms"],
+                            "delta_source": item["delta_source"],
+                            "delta_book_received_ms": item["delta_book_received_ms"],
+                            "response_hash": hashes[name],
+                        })
+                    except Exception:
+                        pass
+                if tracker is not None:
+                    tracker.observe(strike, cat, det)
+                succeeded = True
                 break
             except Exception as exc:
                 # the first failure is the cause; keep it if the retry fails too
@@ -837,29 +1002,29 @@ def _with_public_greeks(
                 if is_maint:
                     maintenance_hits += 1
                     abort_reason = "DERIBIT_MAINTENANCE"
+                    abort_mark_reason = "DERIBIT_MAINTENANCE_SKIPPED"
                     if pacer is not None:
                         pacer.record_maintenance()
-                    _mark_remaining(idx + 1, "DERIBIT_MAINTENANCE_SKIPPED")
                     aborted = True
                     break
                 if is_rl:
                     rate_limit_hits += 1
                     abort_reason = "DERIBIT_HTTP_429"
+                    abort_mark_reason = "DERIBIT_HTTP_429_SKIPPED"
                     exc_retry = getattr(exc, "retry_after_ms", None)
                     if isinstance(exc_retry, int) and exc_retry > 0:
                         retry_after_ms = max(retry_after_ms or 0, exc_retry)
                     if pacer is not None:
                         pacer.record_rate_limit(exc_retry)
-                    _mark_remaining(idx + 1, "DERIBIT_HTTP_429_SKIPPED")
                     aborted = True
                     break
                 if code in {"FETCH_BUDGET_EXHAUSTED", "FETCH_BACKOFF_ACTIVE"}:
                     abort_reason = code
-                    _mark_remaining(idx + 1, code)
+                    abort_mark_reason = code
                     aborted = True
                     break
-        if aborted:
-            break
+        if not succeeded and tracker is not None:
+            tracker.observe(strike, "unacquired", None)
 
     return enriched, {
         "order_book_received_ms": receipts,
@@ -873,6 +1038,7 @@ def _with_public_greeks(
         "wire_requests_retry": wire_retry,
         "cache_hits": len(cache_hit_instruments),
         "cache_hit_instruments": sorted(cache_hit_instruments),
+        "pruned_far_otm_instruments": pruned_far_otm_instruments,
         "skipped_instruments": skipped_instruments,
         "rate_limit_hits": rate_limit_hits,
         "maintenance_hits": maintenance_hits,
@@ -1027,6 +1193,8 @@ def capture_public_deribit_discovery(
         delta_cache_put=delta_cache_put,
         ordered_names=ordered_names,
         captured_ts_ms=selection_clock_ms,
+        index_price=index_price,
+        width_usd=width,
         sleep=sleep,
     )
     order_book_receipts = list(delta_identity.get("order_book_received_ms", {}).values())

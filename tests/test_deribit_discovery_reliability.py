@@ -1456,3 +1456,355 @@ def test_pending_lock_rotation_persistent_missing_timeout_and_declared_validity(
     assert wb_b.locked_candidates.list() == []
 
 
+# ---------------------------------------------------------------------------
+# Stage 4: Nov 26 27NOV26 46-Strike Call Far-Tail Pruning, 0.0-Delta Cache & prepare_deal
+# ---------------------------------------------------------------------------
+
+def _nov26_27nov26_chain() -> tuple[int, int, float, list[dict], dict[int, float]]:
+    """Exact 2026-11-26 27NOV26 16h expiry chain: spot=$60,476, 46 strict-OTM Call strikes."""
+    slot_ms = int(datetime(2026, 11, 26, 16, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    expiry_ms = slot_ms + 16 * HOUR  # 2026-11-27T08:00:00Z (27NOV26)
+    spot = 60_476.0
+    # 18 inner strict-OTM Call strikes (60500..76000) + 28 ultra-deep OTM strikes (77000..110000) = 46 strikes
+    inner_call_strikes = [
+        60_500, 61_000, 62_000, 62_500,
+        63_000, 64_000, 65_000, 66_000, 67_000, 68_000, 69_000, 70_000,
+        71_000, 72_000, 73_000, 74_000, 75_000, 76_000,
+    ]
+    ultra_deep_call_strikes = (
+        list(range(77_000, 99_000, 1_000))  # 22 strikes: 77k..98k
+        + [100_000, 102_000, 104_000, 106_000, 108_000, 110_000]  # 6 strikes -> 28 total
+    )
+    call_strikes = inner_call_strikes + ultra_deep_call_strikes
+    assert len(inner_call_strikes) == 18
+    assert len(ultra_deep_call_strikes) == 28
+    assert len(call_strikes) == 46
+
+    call_deltas: dict[int, float] = {
+        60_500: 0.493,
+        61_000: 0.303,
+        62_000: 0.093,
+        62_500: 0.048,
+        63_000: 0.024,
+        64_000: 0.006,
+        65_000: 0.0014,
+        66_000: 0.0003,
+        67_000: 0.00008,
+        68_000: 0.0,       # rounded to 0.0 inside verified low-delta wing before pruning boundary
+        69_000: 0.0,       # rounded to 0.0
+        70_000: 0.0,       # dist = 9524 >= max(6000, 0.15*60476=9071.4) -> prunes 71000..110000
+        71_000: 0.00003,
+        72_000: 0.00002,
+        73_000: 0.00002,
+        74_000: 0.00001,
+        75_000: 0.00001,
+        76_000: 0.00001,
+    }
+    for k in ultra_deep_call_strikes:
+        call_deltas[k] = 0.0
+
+    rows: list[dict] = []
+    for k in (55_000, 56_000, 57_000, 58_000, 59_000, 60_000):
+        rows.append(_opt(k, "put", expiry=expiry_ms, label="27NOV26"))
+    for k in call_strikes:
+        rows.append(_opt(k, "call", expiry=expiry_ms, label="27NOV26"))
+    return slot_ms, expiry_ms, spot, rows, call_deltas
+
+
+def test_nov26_27nov26_46_call_strikes_tail_pruning_and_zero_delta_cache():
+    slot_ms, expiry_ms, spot, rows, call_deltas = _nov26_27nov26_chain()
+    put_deltas = {60_000: -0.34, 59_000: -0.16, 58_000: -0.06, 57_000: -0.02}
+    cache_store: dict[str, dict] = {}
+    wire_books: list[str] = []
+
+    def get(_base, path, params, _timeout):
+        receipt = {"data_engine_receipt": {"retrieved_at_ms": slot_ms}}
+        if path == "/public/get_index_price":
+            return {"result": {"index_price": spot}, **receipt}
+        if path == "/public/get_instruments":
+            return {"result": [dict(r) for r in rows], **receipt}
+        if path == "/public/get_order_book":
+            name = params["instrument_name"]
+            wire_books.append(name)
+            strike = int(name.split("-")[2])
+            if name.endswith("-C"):
+                # Dominated tail beyond 70000-C must NEVER be requested on the wire
+                assert strike <= 70_000, f"unexpected wire call for dominated far-OTM strike {name}"
+                d_val = call_deltas[strike]
+            else:
+                d_val = put_deltas[strike]
+            return {"result": _book_payload(name, slot_ms, d_val, spot), **receipt}
+        raise AssertionError(path)
+
+    # Pass 1 (cold cache): resolves 61000-C | 63000-C with <= 12 Call wire calls and caches 0.0 tail legs
+    res1 = discovery.capture_public_deribit_discovery(
+        captured_ts_ms=slot_ms,
+        transport=get,
+        start_side="call",
+        delta_cache_get=lambda n: cache_store.get(n),
+        delta_cache_put=lambda n, entry: cache_store.__setitem__(n, dict(entry)),
+    )
+    call_wire_1 = [n for n in wire_books if n.endswith("-C")]
+    assert len(call_wire_1) == 11 and len(call_wire_1) <= 12
+    assert res1["capture_state"] == "COMPLETE"
+    call1 = res1["candidates"]["call"]
+    put1 = res1["candidates"]["put"]
+    assert call1["status"] == "candidate"
+    assert call1["candidate"]["short_instrument"] == "BTC-27NOV26-61000-C"
+    assert call1["candidate"]["long_instrument"] == "BTC-27NOV26-63000-C"
+    assert put1["status"] == "candidate"
+    assert put1["candidate"]["short_instrument"] == "BTC-27NOV26-60000-P"
+    pop1 = call1["delta_population"]
+    assert pop1["complete"] is True
+    assert pop1["delta_missing_or_invalid"] == []
+    assert pop1["unacquired"] == []
+    assert pop1["verified_far_otm_zero"] == 3  # 68000-C, 69000-C, 70000-C
+    assert pop1["pruned_far_otm_count"] > 20
+    assert "BTC-27NOV26-77000-C" in pop1["pruned_far_otm_tail"]
+    assert len(res1["data_identity"]["delta_capture"]["pruned_far_otm_instruments"]) == pop1["pruned_far_otm_count"]
+    for zero_leg in ("BTC-27NOV26-68000-C", "BTC-27NOV26-69000-C", "BTC-27NOV26-70000-C"):
+        assert zero_leg in cache_store
+        assert cache_store[zero_leg]["greeks"]["delta"] == 0.0
+
+    # Pass 2 (warm cache): 0 wire order_book calls; cached 0.0 tail legs accepted and far tail pruned again
+    wire_books.clear()
+    res2 = discovery.capture_public_deribit_discovery(
+        captured_ts_ms=slot_ms + 20_000,
+        transport=get,
+        start_side="call",
+        delta_cache_get=lambda n: cache_store.get(n),
+        delta_cache_put=lambda n, entry: cache_store.__setitem__(n, dict(entry)),
+    )
+    assert wire_books == []
+    assert res2["capture_state"] == "COMPLETE"
+    assert res2["candidates"]["call"]["candidate"]["short_instrument"] == "BTC-27NOV26-61000-C"
+    assert res2["data_identity"]["delta_capture"]["wire_requests_total"] == 0
+    assert res2["data_identity"]["delta_capture"]["cache_hits"] == 15  # 11 Call + 4 Put
+
+    # Direct discover() even with ultra-low delta_target_abs never selects a zero-delta worthless wing
+    direct_rows = []
+    for r in rows:
+        item = dict(r)
+        k = int(item["strike"])
+        if item["option_type"] == "put" and k in put_deltas:
+            item["greeks"] = {"delta": put_deltas[k]}
+            item["delta_observed_at_ms"] = slot_ms - 500
+        elif item["option_type"] == "call":
+            if k <= 76_000:
+                item["greeks"] = {"delta": call_deltas[k]}
+                item["delta_observed_at_ms"] = slot_ms - 500
+            elif k <= 85_000:
+                item["greeks"] = {"delta": 0.0}
+                item["delta_observed_at_ms"] = slot_ms - 500
+            # Leave 86000..110000 without greeks (unacquired beyond monotonic <=0.03 pruned boundary)
+        direct_rows.append(item)
+    res_low_target = discovery.discover(direct_rows, spot, slot_ms, short_delta_target_abs=0.00001)
+    assert res_low_target["candidates"]["call"]["status"] == "candidate"
+    assert res_low_target["candidates"]["call"]["short_abs_delta"] > 0.0
+
+
+def test_adversarial_near_atm_zero_or_missing_delta_still_fails_closed():
+    slot_ms, expiry_ms, spot, rows, call_deltas = _nov26_27nov26_chain()
+    put_deltas = {60_000: -0.34, 59_000: -0.16, 58_000: -0.06, 57_000: -0.02}
+
+    def build_chain(override_call: dict[int, tuple[float | None, int | None]]) -> list[dict]:
+        out = []
+        for r in rows:
+            item = dict(r)
+            k = int(item["strike"])
+            if item["option_type"] == "put" and k in put_deltas:
+                item["greeks"] = {"delta": put_deltas[k]}
+                item["delta_observed_at_ms"] = slot_ms - 500
+            elif item["option_type"] == "call":
+                if k in override_call:
+                    d_val, obs = override_call[k]
+                    if d_val is not None:
+                        item["greeks"] = {"delta": d_val}
+                    if obs is not None:
+                        item["delta_observed_at_ms"] = obs
+                else:
+                    item["greeks"] = {"delta": call_deltas[k]}
+                    item["delta_observed_at_ms"] = slot_ms - 500
+            out.append(item)
+        return out
+
+    # 1. Near-ATM delta=0.0 on 61000-C (before any <=0.10 wing) MUST fail closed
+    bad_near_zero = discovery.discover(build_chain({61_000: (0.0, slot_ms - 500)}), spot, slot_ms)
+    c_zero = bad_near_zero["candidates"]["call"]
+    assert c_zero["status"] == "gap"
+    assert "delta_population_greeks_incomplete" in c_zero["gap_reasons"]
+    assert "short_delta_sign_mismatch" in c_zero["gap_reasons"]
+    assert "BTC-27NOV26-61000-C" in c_zero["delta_population"]["delta_missing_or_invalid"]
+    assert c_zero["delta_population"]["complete"] is False
+    assert c_zero["delta_population"]["pruned_far_otm_count"] == 0
+
+    # 2. Near-ATM delta=None on 61000-C MUST fail closed and disable pruning
+    bad_near_none = discovery.discover(build_chain({61_000: (None, slot_ms - 500)}), spot, slot_ms)
+    c_none = bad_near_none["candidates"]["call"]
+    assert c_none["status"] == "gap"
+    assert "delta_population_greeks_incomplete" in c_none["gap_reasons"]
+    assert "short_delta_missing_or_invalid" in c_none["delta_population"]["delta_missing_or_invalid"] or (
+        "short_delta_missing_or_invalid" in c_none["gap_reasons"]
+    )
+    assert c_none["delta_population"]["pruned_far_otm_count"] == 0
+
+    # 3. Inside <=0.10 wing (after 62000-C=0.093), delta=None (missing, NOT 0.0!) before pruning MUST fail closed
+    bad_wing_none = discovery.discover(build_chain({64_000: (None, slot_ms - 500)}), spot, slot_ms)
+    c_wing_none = bad_wing_none["candidates"]["call"]
+    assert c_wing_none["status"] == "gap"
+    assert "delta_population_greeks_incomplete" in c_wing_none["gap_reasons"]
+    assert c_wing_none["delta_population"]["complete"] is False
+
+    # 4. Stale timestamp on delta=0.0 in far-OTM wing MUST fail closed
+    stale_ts = slot_ms - discovery.DEFAULT_DELTA_MAX_AGE_MS - 100
+    bad_wing_stale = discovery.discover(build_chain({68_000: (0.0, stale_ts)}), spot, slot_ms)
+    c_wing_stale = bad_wing_stale["candidates"]["call"]
+    assert c_wing_stale["status"] == "gap"
+    assert "short_delta_stale_or_future" in c_wing_stale["gap_reasons"]
+    assert "delta_population_greeks_incomplete" in c_wing_stale["gap_reasons"]
+
+
+def test_shadow_tracking_prepare_deal_debounce_classifications_and_dual_cases(tmp_path, monkeypatch):
+    slot = SLOT_16
+    expiry = slot + 16 * HOUR
+    clock = [slot + 5_000]
+    mode = {"call_429": False, "call_above_max": False}
+
+    def on_ob(name, ts):
+        if name.endswith("-C"):
+            if mode["call_429"]:
+                raise discovery.DeribitPublicError.from_http(
+                    _http_error(429, b'{"error":{"code":10028,"message":"too_many_requests"}}', headers={"Retry-After": "8"}),
+                    "/public/get_order_book",
+                )
+            if mode["call_above_max"]:
+                return {"result": _book_payload(name, ts, 0.62)}
+        return None
+
+    wb, snaps, _, wire_log = _wire_workbench_market(
+        tmp_path, monkeypatch, clock=clock, expiry=expiry, on_order_book=on_ob,
+        shadow_dossier_root=tmp_path / "dossiers",
+    )
+    wb._expiry_gamma = {
+        "schema": "astra_expiry_gamma_v1@1.0.0",
+        "status": "ok",
+        "computed_at_ms": clock[0] - 2_000,
+        "available_at_ms": clock[0] - 1_500,
+        "expiries": {
+            "23NOV26": {
+                "expiry": "23NOV26",
+                "expiry_ms": expiry,
+                "forward_usd": 100_000.0,
+                "atm_iv_pct": 51.0,
+                "expected_move_usd": 1400.0,
+                "pin_status": "ok",
+                "walls": {"pin": 100_000.0, "gamma_call": 103_000.0, "gamma_put": 97_000.0,
+                          "oi_call": 103_000.0, "oi_put": 97_000.0},
+                "top": {"oi_put": [{"strike": 97_000.0}], "oi_call": [{"strike": 103_000.0}]},
+            }
+        },
+        "realized_vol": {
+            "instrument": "BTC-PERPETUAL",
+            "symbol": "BTC-PERPETUAL",
+            "bar": "1h close-to-close",
+            "source": "deribit_public/get_tradingview_chart_data",
+            "status": "ok",
+            "rv_24h_pct": 46.8,
+            "last_bar_end_ms": slot,
+            "rv_computed_at_ms": clock[0] - 2_000,
+            "rv_available_at_ms": clock[0] - 1_500,
+            "cached_fallback": False,
+        },
+    }
+
+    with serving(wb) as base:
+        service = post(base, wb)
+
+        # 1. Empty view with allow_refresh=False -> DISCOVERY_INCOMPLETE, no refresh
+        r_empty = service("prepare_deal", {"target_expiry_ms": expiry, "slot_ms": slot, "allow_refresh": False})
+        assert r_empty["readiness_status"] == "DISCOVERY_INCOMPLETE"
+        assert r_empty["refreshed"] is False
+        assert r_empty["execution_allowed"] is False
+        assert "cases" not in r_empty
+
+        # 2. Invalid field in prepare_deal rejected with HTTP 400 -> Blocked("invalid_shadow_request")
+        with pytest.raises(tracking.Blocked) as exc_bad:
+            service("prepare_deal", {"target_expiry_ms": expiry, "unexpected_key": True})
+        assert exc_bad.value.code == "invalid_shadow_request"
+        assert exc_bad.value.__cause__.code == 400
+
+        # 3. Active Deribit 429 cooldown -> DERIBIT_429_COOLDOWN, skips refresh even with allow_refresh=True
+        wb.data_engine.set_provider_cooldown("deribit", until_ms=clock[0] + 6_000, reason="DERIBIT_HTTP_429", now_ms=clock[0])
+        r_cd = service("prepare_deal", {"target_expiry_ms": expiry, "slot_ms": slot, "allow_refresh": True})
+        assert r_cd["readiness_status"] == "DERIBIT_429_COOLDOWN"
+        assert r_cd["deribit_cooldown_remaining_ms"] == 6_000
+        assert r_cd["refreshed"] is False
+
+        # 4. Cooldown clears -> allow_refresh=True refreshes ONCE and returns SOURCE_READY + verified dual cases
+        clock[0] += 7_000
+        write_fmz(snaps, native_gate(ts=clock[0] - 1000), now=clock[0])
+        r_ready = service("prepare_deal", {
+            "target_expiry_ms": expiry,
+            "slot_ms": slot,
+            "candidate_round": "r16",
+            "allow_refresh": True,
+            "input_profile": "p0_strict@1",
+        })
+        assert r_ready["readiness_status"] == "SOURCE_READY"
+        assert r_ready["ready_for_deal"] is True
+        assert r_ready["blockers"] == []
+        assert r_ready["refreshed"] is True and r_ready["refresh_triggered"] is True
+        assert r_ready["refresh_debounced"] is False
+        assert r_ready["pair_skew_ok"] is True and r_ready["pair_skew_ms"] <= 60_000
+        assert r_ready["channels"]["l3_expiry_gamma"]["ok"] is True
+        assert r_ready["channels"]["l4_realized_vol"]["ok"] is True
+        assert set(r_ready["cases"]) == {"put", "call"}
+        for s in ("put", "call"):
+            c_obj = r_ready["cases"][s]
+            assert c_obj["schema"] == "case_file@0.1"
+            assert dossier.player.values(c_obj, "L1.contract")["expiry_ms"] == expiry
+            assert c_obj["build"]["built_at_ms"] >= slot
+        assert abs(r_ready["cases"]["put"]["build"]["built_at_ms"] - r_ready["cases"]["call"]["build"]["built_at_ms"]) <= 60_000
+
+        # Readiness endpoint preserves legacy keys and adds summary fields
+        r_ping = service("readiness", {})
+        for k in ("enabled", "synced_contracts", "active", "episodes", "max_active", "max_episodes", "execution_allowed",
+                  "view_updated_at_ms", "discovery_capture_state", "deribit_cooldown_remaining_ms", "candidate_sides"):
+            assert k in r_ping
+        assert r_ping["discovery_capture_state"] == "COMPLETE"
+        assert set(r_ping["candidate_sides"]) == {"put", "call"}
+
+        # 5. Bounded 20s refresh debounce: within 20s of prior prepare_deal refresh, repeated allow_refresh=True will NOT hammer
+        clock[0] += 5_000
+        with wb._view_lock:
+            wb._current_view["discovery_status"]["capture_state"] = "PARTIAL"
+            wb._current_view["candidates"][1] = {
+                "side": "call", "status": "gap", "snapshot": None, "formal_evidence_eligible": False,
+                "live_lock_eligible": False, "review_gate": {"reasons": ["delta_population_capture_incomplete"]},
+                "discovery_status": {"capture_state": "PARTIAL", "delta_population": {"complete": False, "verified_eligible": 0}},
+            }
+        wires_before_debounce = len(wire_log)
+        r_deb = service("prepare_deal", {"target_expiry_ms": expiry, "slot_ms": slot, "allow_refresh": True})
+        assert r_deb["readiness_status"] == "DISCOVERY_INCOMPLETE"
+        assert r_deb["refreshed"] is False
+        assert r_deb["refresh_debounced"] is True
+        assert len(wire_log) == wires_before_debounce
+
+        # Advance past 20s debounce + 300s discovery TTL -> Market single-side (all Call deltas > 0.50 max, complete=True, verified_eligible=0)
+        clock[0] += 305_000
+        mode["call_above_max"] = True
+        wb._expiry_gamma["computed_at_ms"] = clock[0] - 1_000
+        wb._expiry_gamma["realized_vol"]["rv_computed_at_ms"] = clock[0] - 1_000
+        write_fmz(snaps, native_gate(ts=clock[0] - 1000), now=clock[0])
+        r_single = service("prepare_deal", {"target_expiry_ms": expiry, "slot_ms": slot, "allow_refresh": True})
+        assert r_single["refreshed"] is True
+        assert r_single["readiness_status"] == "MARKET_SINGLE_SIDE_ONLY"
+        assert "cases" not in r_single
+
+        # Subsequent call >20s later on MARKET_SINGLE_SIDE_ONLY does NOT wastefully refresh
+        clock[0] += 25_000
+        wires_before_single2 = len(wire_log)
+        r_single2 = service("prepare_deal", {"target_expiry_ms": expiry, "slot_ms": slot, "allow_refresh": True})
+        assert r_single2["readiness_status"] == "MARKET_SINGLE_SIDE_ONLY"
+        assert r_single2["refreshed"] is False
+        assert len(wire_log) == wires_before_single2

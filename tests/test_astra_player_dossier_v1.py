@@ -292,3 +292,188 @@ def test_settle_leaves_t0_credit_none_without_tracking_link(active, monkeypatch)
     result = dossier.read(d.official(EXPIRY) / 'outcome.json')
     assert result['hands'][0]['t0_net_credit_after_entry_fee_btc'] is None
     assert result['hands'][0]['hold_to_expiry_shadow_net_btc'] is None
+
+
+def test_note_multi_tick_attempts_diagnostics_and_window_close_preservation(tmp_path):
+    clock = Clock(SLOT + 2 * M)
+    d = dossier.Dossiers(tmp_path, clock)
+
+    def blocked(*_):
+        raise LookupError('call candidate missing')
+
+    # Tick 1 at +2m -> DATA_BLOCKED created with attempt_count=1
+    hand = d.tick(plan(), blocked)[0]
+    note_files = list((hand / 'issuance').glob('*.json'))
+    assert len(note_files) == 1
+    n1 = dossier.read(note_files[0])
+    assert n1['state'] == 'DATA_BLOCKED'
+    assert n1['reason'] == 'call candidate missing'
+    assert n1['recorded_at_ms'] == SLOT + 2 * M
+    assert n1['first_recorded_at_ms'] == SLOT + 2 * M
+    assert n1['attempt_count'] == 1
+    assert n1['attempt_times_ms'] == [SLOT + 2 * M]
+
+    # Direct multi-tick note() updates diagnostics and caps attempt_times_ms at 16
+    for i in range(2, 20):
+        clock.ms = SLOT + i * M
+        d.note(hand, 'DATA_BLOCKED', 'call candidate missing', diagnostics={'last_step': i, 'capture_state': 'PARTIAL'})
+    note_files = list((hand / 'issuance').glob('*.json'))
+    assert len(note_files) == 1
+    n_many = dossier.read(note_files[0])
+    assert n_many['first_recorded_at_ms'] == SLOT + 2 * M
+    assert n_many['recorded_at_ms'] == SLOT + 19 * M
+    assert n_many['attempt_count'] == 19
+    assert len(n_many['attempt_times_ms']) == 16
+    assert n_many['attempt_times_ms'][-1] == SLOT + 19 * M
+    assert n_many['diagnostics'] == {'last_step': 19, 'capture_state': 'PARTIAL'}
+
+    # At +32m (>= deal_grace_ms=20m in schedule.json): tick() preserves DATA_BLOCKED and adds window_closed_at_ms
+    grace = plan()['deal_grace_ms']
+    clock.ms = SLOT + grace + 2 * M
+    d.tick(plan(), blocked)
+    note_files = list((hand / 'issuance').glob('*.json'))
+    assert len(note_files) == 1
+    n_closed = dossier.read(note_files[0])
+    assert n_closed['state'] == 'DATA_BLOCKED'
+    assert n_closed['window_closed_at_ms'] == SLOT + grace + 2 * M
+    assert n_closed['attempt_count'] == 19
+
+    # Subsequent tick past grace does NOT overwrite window_closed_at_ms
+    clock.ms = SLOT + grace + 10 * M
+    d.tick(plan(), blocked)
+    assert dossier.read(note_files[0])['window_closed_at_ms'] == SLOT + grace + 2 * M
+    d.summary(EXPIRY)
+    assert dossier.read(d.path(EXPIRY) / 'manifest.json')['counts'] == {'SCHEDULED': {'DATA_BLOCKED': 1}}
+
+    # Contrast: next day's slot with ZERO prior notes still records MISSED after grace closes
+    clock.ms = SLOT + dossier.DAY + grace + 2 * M
+    due = d.tick(plan())
+    missed_notes = [dossier.read(p) for p in (due[1] / 'issuance').glob('*.json')]
+    assert len(missed_notes) == 1 and missed_notes[0]['state'] == 'MISSED'
+
+
+def test_collect_fallback_cases_provenance_early_card_and_strict_guards(tmp_path, monkeypatch):
+    import json
+    import shutil
+    from tools import astra_case_file_v1 as cf
+
+    cases = [dossier.player.read_json(next((SRC / 'cases/2026-11-14').glob(f'14_{s}_*.gz'))) for s in ('put', 'call')]
+    # Seal canonical content_sha256 on both fixture cases
+    sealed_cases = {}
+    for s, c in zip(('put', 'call'), cases):
+        body = {k: v for k, v in c.items() if k != 'build'}
+        sha = dossier.archive._canonical_case_content_sha256(body)
+        sealed_cases[s] = {**body, 'build': {**c['build'], 'content_sha256': sha}}
+
+    instruments = [
+        dict(
+            instrument_name=dossier.player.values(c, 'L1.contract')[leg],
+            expiration_timestamp=EXPIRY,
+            settlement_currency='BTC',
+            is_active=True,
+        )
+        for c in cases
+        for leg in ('short_instrument', 'long_instrument')
+    ]
+    path = dossier.player.read_json(SRC / 'paths/2026-11-15.json.gz')
+    monkeypatch.setattr(dossier, 'public', lambda *_a, **_k: instruments)
+    monkeypatch.setattr(dossier.archive.Deribit, 'index_path', lambda _self: path['points'])
+
+    # 1. Empty archive + fallback_cases at SLOT + 2m (< 15m, no levels/*.jsonl yet) builds targeted_backfill cards
+    empty_arch = tmp_path / 'empty_arch'
+    src_fb = dossier.collect(
+        empty_arch,
+        EXPIRY,
+        SLOT,
+        startup=False,
+        clock=Clock(SLOT + 2 * M),
+        fallback_cases=sealed_cases,
+    )
+    assert src_fb['source'] == 'targeted workbench verified native case + Deribit public read'
+    assert len(src_fb['cards']) == 2
+    assert all('targeted_backfill_card_from_native_case' in card['data_gaps'] for card in src_fb['cards'])
+
+    # Sequence form + provenance_override when 1 side is on disk and 1 side is from fallback
+    half_arch = tmp_path / 'half_arch'
+    put_gz = next((SRC / 'cases/2026-11-14').glob('14_put_*.gz'))
+    dest_dir = half_arch / 'cases/2026-11-14'
+    dest_dir.mkdir(parents=True)
+    shutil.copy2(put_gz, dest_dir / put_gz.name)
+    src_half = dossier.collect(
+        half_arch,
+        EXPIRY,
+        SLOT,
+        startup=False,
+        clock=Clock(SLOT + 2 * M),
+        fallback_cases=[sealed_cases['put'], sealed_cases['call']],
+        provenance_override='targeted backfill persisted + Deribit public read',
+    )
+    assert src_half['source'] == 'targeted backfill persisted + Deribit public read'
+
+    # Fails closed when tampered content_sha256
+    bad_fb = json.loads(json.dumps(sealed_cases))
+    bad_fb['call']['contract_cn'] = 'tampered'
+    with pytest.raises(LookupError, match='哈希校验失败'):
+        dossier.collect(empty_arch, EXPIRY, SLOT, clock=Clock(SLOT + 2 * M), fallback_cases=bad_fb)
+
+    # Fails closed when pair skew > 60s
+    skew_fb = json.loads(json.dumps(sealed_cases))
+    skew_fb['call']['build']['built_at_ms'] = skew_fb['put']['build']['built_at_ms'] + 65_000
+    with pytest.raises(LookupError, match='60 秒'):
+        dossier.collect(empty_arch, EXPIRY, SLOT, clock=Clock(SLOT + 2 * M), fallback_cases=skew_fb)
+
+    # Fails closed when index_path does not cover tick within PATH_EDGE_MS
+    monkeypatch.setattr(dossier.archive.Deribit, 'index_path', lambda _self: [[SLOT - 30 * M, 66500.0]])
+    with pytest.raises(LookupError, match='指数路径未覆盖'):
+        dossier.collect(empty_arch, EXPIRY, SLOT, clock=Clock(SLOT + 2 * M), fallback_cases=sealed_cases)
+    assert cf.SCHEMA == 'case_file@0.1'
+
+
+def test_settle_due_deduplicates_unverified_zero_evidence_dossier_while_retrying_dealt_dossier(tmp_path, monkeypatch):
+    # 1. Zero-evidence DATA_BLOCKED dossier settles UNVERIFIED once and never duplicates outcome_*
+    clock = Clock(SLOT + 2 * M)
+    d_blocked = dossier.Dossiers(tmp_path / 'blocked_root', clock)
+    d_blocked.tick(plan(), lambda *_: (_ for _ in ()).throw(LookupError('no cases')))
+    delivery_calls = []
+
+    def fake_delivery(method, **params):
+        delivery_calls.append((method, clock()))
+        return {'data': [{'date': '2026-11-15', 'delivery_price': 64100.0}]}
+
+    monkeypatch.setattr(dossier, 'public', fake_delivery)
+    monkeypatch.setattr(dossier.archive.Deribit, 'index_path', lambda _self: [])
+
+    clock.ms = EXPIRY + 6 * M
+    settled_1 = list(d_blocked.settle_due())
+    assert len(settled_1) == 1 and len(delivery_calls) == 1
+    out_dirs = list((d_blocked.path(EXPIRY) / 'outcomes').glob('outcome_*/outcome.json'))
+    assert len(out_dirs) == 1 and dossier.read(out_dirs[0])['classification'] == 'UNVERIFIED'
+
+    clock.ms = EXPIRY + 16 * M
+    assert list(d_blocked.settle_due()) == []
+    clock.ms = EXPIRY + 31 * M
+    assert list(d_blocked.settle_due()) == []
+    assert len(delivery_calls) == 1
+    assert len(list((d_blocked.path(EXPIRY) / 'outcomes').glob('outcome_*/outcome.json'))) == 1
+
+    # 2. Dealt dossier whose first settlement was UNVERIFIED (missing delivery price) STILL retries until OFFICIAL
+    clock_dealt = Clock(SLOT + M)
+    d_dealt = dossier.Dossiers(tmp_path / 'dealt_root', clock_dealt)
+    d_dealt.tick(plan(), lambda *_: source(clock_dealt))
+    published = {'ready': False}
+
+    def delayed_delivery(method, **params):
+        return {'data': [{'date': '2026-11-15', 'delivery_price': 64100.0}] if published['ready'] else []}
+
+    monkeypatch.setattr(dossier, 'public', delayed_delivery)
+    clock_dealt.ms = EXPIRY + 6 * M
+    assert len(list(d_dealt.settle_due())) == 1
+    assert [dossier.read(p)['classification'] for p in (d_dealt.path(EXPIRY) / 'outcomes').glob('outcome_*/outcome.json')] == ['UNVERIFIED']
+
+    published['ready'] = True
+    clock_dealt.ms = EXPIRY + 16 * M
+    assert len(list(d_dealt.settle_due())) == 1
+    classes = {dossier.read(p)['classification'] for p in (d_dealt.path(EXPIRY) / 'outcomes').glob('outcome_*/outcome.json')}
+    assert 'OFFICIAL' in classes
+    clock_dealt.ms = EXPIRY + 31 * M
+    assert list(d_dealt.settle_due()) == []

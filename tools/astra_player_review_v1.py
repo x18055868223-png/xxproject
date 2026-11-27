@@ -134,6 +134,8 @@ _BANNED_REQUEST_KEYS = frozenset({
     "condition",
     "locked_series",
     "api_key",
+    "reasoning_content",
+    "reasoning",
 })
 _REQUEST_STAGE_LABELS = {
     "initial": "initial（初始发牌）",
@@ -1317,19 +1319,81 @@ def parse_initial_reply(
         **{k: payload.get(k) for k in excerpt_keys},
         "depends_on_ard": payload.get("depends_on_ard"),
     }
-    decision = dossier.parse(raw_bytes, annotation)
+
+    def _raise_strict_contract_precheck(
+        err_code: str,
+        message: str,
+        *,
+        audit_scope: str,
+        decision_obj: dict[str, Any] | None = None,
+        plan_obj: dict[str, Any] | None = None,
+    ) -> None:
+        if effective_strict:
+            report = {
+                "status": "CONTRACT_FAILED",
+                "audit_scope": audit_scope,
+                "mechanical_contract_version": getattr(dossier.condition, "MECHANICAL_CONTRACT_VERSION", "p2_strict@1"),
+                "layer1_deterministic": {
+                    "valid": False,
+                    "blocking_errors": [err_code],
+                    "excerpt_checks": {},
+                },
+                "layer2_semantic_risk": {},
+                "c_audit": {},
+                "canonical_confirmation": None,
+            }
+            raise ContractValidationError(
+                message,
+                parsed_reply={
+                    "raw_bytes": raw_bytes,
+                    "raw_text": public_text,
+                    "annotation": annotation,
+                    "condition_plan": plan_obj,
+                    "decision": decision_obj,
+                    "request_payload": req_payload,
+                },
+                contract_validation=report,
+            )
+        raise ValueError(message)
+
+    try:
+        decision = dossier.parse(raw_bytes, annotation)
+    except ValueError as parse_exc:
+        msg = str(parse_exc)
+        if "heading" in msg or "Put/Call" in msg:
+            code = "invalid_or_ambiguous_decision_heading"
+        elif "ARD dependence" in msg:
+            code = "invalid_depends_on_ard_type"
+        else:
+            code = "j1_annotation_excerpt_invalid"
+        _raise_strict_contract_precheck(code, msg, audit_scope="INITIAL_ANNOTATION_PRECHECK")
 
     parsed_plan: dict[str, Any] | None = None
     if decision["action"] == "Accept":
         raw_plan = payload.get("condition_plan")
         if not isinstance(raw_plan, Mapping):
-            raise ValueError("Accept decision requires condition_plan")
+            _raise_strict_contract_precheck(
+                "missing_condition_plan",
+                "Accept decision requires condition_plan",
+                audit_scope="ACCEPT_FULL_CONTRACT",
+                decision_obj=decision,
+            )
         invalidation = raw_plan.get("invalidation")
         if invalidation not in dossier.condition.RULES:
-            raise ValueError("unsupported condition_plan.invalidation")
+            _raise_strict_contract_precheck(
+                f"unsupported_invalidation:{invalidation}",
+                "unsupported condition_plan.invalidation",
+                audit_scope="ACCEPT_FULL_CONTRACT",
+                decision_obj=decision,
+            )
         interval = raw_plan.get("check_interval_ms", 300_000)
         if isinstance(interval, bool) or not isinstance(interval, int) or not 0 < interval <= dossier.DAY or interval % dossier.MINUTE:
-            raise ValueError("condition_plan.check_interval_ms must be positive minute-aligned int")
+            _raise_strict_contract_precheck(
+                f"invalid_check_interval_ms:{interval}",
+                "condition_plan.check_interval_ms must be positive minute-aligned int",
+                audit_scope="ACCEPT_FULL_CONTRACT",
+                decision_obj=decision,
+            )
         parsed_plan = {
             "invalidation": invalidation,
             "check_interval_ms": interval,
@@ -1337,7 +1401,13 @@ def parse_initial_reply(
         if "require_outside_at_t0" in raw_plan:
             require_outside = raw_plan["require_outside_at_t0"]
             if not isinstance(require_outside, bool):
-                raise ValueError("condition_plan.require_outside_at_t0 must be boolean")
+                _raise_strict_contract_precheck(
+                    f"invalid_require_outside_at_t0:{require_outside!r}",
+                    "condition_plan.require_outside_at_t0 must be boolean",
+                    audit_scope="ACCEPT_FULL_CONTRACT",
+                    decision_obj=decision,
+                    plan_obj=parsed_plan,
+                )
             parsed_plan["require_outside_at_t0"] = require_outside
         elif prompt_ver in CANDIDATE_STRICT_PROMPT_VERSIONS and prompt_ver not in P5_STRICT_PROMPT_VERSIONS:
             # @1.1-candidate prompt declares require_outside_at_t0 optional; fail-closed default to True.

@@ -268,22 +268,100 @@ def _resolve_band_snapshot(archive_root, cutoff_ms, band_snapshot=None):
     return None
 
 
-def collect(archive_root, expiry, slot, *, startup=False, clock=now_ms, band_snapshot=None, candidate_round='r2'):
+def _normalize_fallback_cases(fallback_cases):
+    if fallback_cases is None:
+        return {}
+    by_side = {}
+    if isinstance(fallback_cases, dict) or hasattr(fallback_cases, 'keys'):
+        for side in ('put', 'call'):
+            cand = fallback_cases.get(side)
+            if isinstance(cand, dict) or hasattr(cand, 'keys'):
+                by_side[side] = dict(cand)
+        return by_side
+    if isinstance(fallback_cases, (list, tuple)):
+        for item in fallback_cases:
+            if not (isinstance(item, dict) or hasattr(item, 'keys')):
+                continue
+            cand = dict(item)
+            side = (player.values(cand, 'L1.contract') or {}).get('side')
+            if side in ('put', 'call'):
+                if side in by_side:
+                    raise LookupError(f'重复的 {side} 回退案卷')
+                by_side[side] = cand
+        return by_side
+    raise LookupError('无效的回退案卷格式')
+
+
+def collect(archive_root, expiry, slot, *, startup=False, clock=now_ms, band_snapshot=None, candidate_round='r2',
+            fallback_cases=None, provenance_override=None):
     """Use the existing archive's native cases. Public reads fill the current path and expiry proof."""
+    archive_root = Path(archive_root)
     day = utc(expiry).date().isoformat()
     case_dir = archive_root / 'cases' / utc(slot).date().isoformat()
+    fallback_by_side = _normalize_fallback_cases(fallback_cases)
     candidates = []
+    candidate_is_fallback = []
+    used_fallback = False
     for side in ('put', 'call'):
-        matches = list(case_dir.glob(f'{utc(slot):%H}_{side}_*.json.gz'))
-        if len(matches) != 1:
+        matches = list(case_dir.glob(f'{utc(slot):%H}_{side}_*.json.gz')) if case_dir.is_dir() else []
+        if len(matches) > 1:
             raise LookupError(f'需同一个采集小时的唯一 {side} 原生案卷，现有 {len(matches)} 份')
-        candidates.append(player.read_json(matches[0]))
-    reads = [case['build']['built_at_ms'] for case in candidates]
+        if len(matches) == 1:
+            candidates.append(player.read_json(matches[0]))
+            candidate_is_fallback.append(False)
+        elif side in fallback_by_side:
+            fb_case = fallback_by_side[side]
+            cid = fb_case.get('case_id')
+            if not isinstance(cid, str) or not cid.startswith('cf_'):
+                raise LookupError(f'无效的 {side} 回退案卷身份')
+            fb_build = fb_case.get('build') if isinstance(fb_case.get('build'), dict) else {}
+            if fb_build.get('content_sha256') is not None:
+                if fb_build.get('content_sha256') != archive._canonical_case_content_sha256(fb_case):
+                    raise LookupError(f'{side} 回退案卷内容哈希校验失败')
+            candidates.append(fb_case)
+            candidate_is_fallback.append(True)
+            used_fallback = True
+        else:
+            raise LookupError(f'需同一个采集小时的唯一 {side} 原生案卷，现有 0 份')
+    reads = [(case.get('build') or {}).get('built_at_ms') for case in candidates]
+    if any(type(t) is not int for t in reads):
+        raise LookupError('案卷构建时间无效')
     contracts = [player.values(case, 'L1.contract') for case in candidates]
+    if [c.get('side') for c in contracts] != ['put', 'call']:
+        raise LookupError('案卷方向与目标槽位不符')
     if any(c['expiry_ms'] != expiry for c in contracts):
         raise LookupError('当前引擎候选到期与目标不符')
-    if startup and clock() - min(reads) > 15 * MINUTE:
-        raise LookupError('当前小时案卷距启动过久，等下一次原生采集')
+    at_check = clock()
+    if startup:
+        if at_check - min(reads) > 15 * MINUTE:
+            raise LookupError('当前小时案卷距启动过久，等下一次原生采集')
+    elif any(not (slot <= t <= at_check) for t in reads):
+        raise LookupError('当前小时案卷构建时间超出采集槽位窗口')
+    if abs(reads[0] - reads[1]) > 60_000:
+        raise LookupError('双侧案卷构建时间差超过 60 秒')
+    val_reads = []
+    for side_idx, (case, built_ms, is_fb) in enumerate(zip(candidates, reads, candidate_is_fallback)):
+        s_name = 'put' if side_idx == 0 else 'call'
+        quote = player.values(case, 'L2.quote')
+        if not isinstance(quote, dict):
+            raise LookupError(f'{s_name} 案卷缺少 L2.quote 报价')
+        q_credit = player.number(quote.get('credit_btc'))
+        if q_credit is None or q_credit <= 0:
+            raise LookupError(f'{s_name} 案卷缺少有效正权利金净信用')
+        if (quote.get('gap_reasons') or []) or (quote.get('quote_gap_reasons') or []):
+            raise LookupError(f'{s_name} 案卷报价存在盘口缺口')
+        v_ts = quote.get('valuation_ts_ms')
+        if type(v_ts) is not int:
+            v_ts = case.get('asof_ms')
+        if type(v_ts) is not int or not (0 <= built_ms - v_ts <= 180_000):
+            raise LookupError(f'{s_name} 案卷报价估值时间缺失或超出 180 秒保鲜期')
+        if not startup and v_ts < (slot - 180_000):
+            raise LookupError(f'{s_name} 案卷报价估值时间早于采集槽位允许窗口')
+        if is_fb and (at_check - v_ts) > 180_000:
+            raise LookupError(f'{s_name} 回退案卷报价已超过 180 秒保鲜期')
+        val_reads.append(v_ts)
+    if abs(val_reads[0] - val_reads[1]) > 60_000:
+        raise LookupError('双侧案卷报价估值时间差超过 60 秒')
     instruments = public('get_instruments', currency='BTC', kind='option', expired='false')
     wanted = {c[f'{leg}_instrument'] for c in contracts for leg in ('short', 'long')}
     instrument_proof = [r for r in instruments if r.get('instrument_name') in wanted]
@@ -304,6 +382,7 @@ def collect(archive_root, expiry, slot, *, startup=False, clock=now_ms, band_sna
     known = [r for r in history if r.get('available_at_ms') is not None and r['available_at_ms'] <= max(reads)]
     cards = []
     existing = rows(archive_root / 'levels' / f'{day}.jsonl')
+    allow_backfill_card = fallback_cases is not None or provenance_override is not None
     for case, c, tick in zip(candidates, contracts, reads):
         native = [r for r in existing if r.get('schema') == levels.CARD_SCHEMA and r.get('round') == candidate_round
                   and r.get('case_id') == case['case_id'] and r.get('backfilled') is False]
@@ -311,13 +390,19 @@ def collect(archive_root, expiry, slot, *, startup=False, clock=now_ms, band_sna
             cards.append(native[0])
             continue
         late_scheduled = not startup and clock() >= slot + 15 * MINUTE
-        if not startup and not late_scheduled:
+        if not startup and not late_scheduled and not allow_backfill_card:
             raise LookupError(f"等待 {c['side']} 原生 {candidate_round} 位置卡")
         cut = [p for p in points if p[0] <= tick]
         if not cut or tick - cut[-1][0] > levels.PATH_EDGE_MS:
             raise LookupError('候选读取时的指数路径未覆盖')
         snaps = [r for r in known if r['available_at_ms'] <= tick]
-        gap = 'startup_card_from_native_case' if startup else 'scheduled_card_from_native_case'
+        gap = (
+            'startup_card_from_native_case'
+            if startup
+            else 'targeted_backfill_card_from_native_case'
+            if allow_backfill_card
+            else 'scheduled_card_from_native_case'
+        )
         cards.append(levels.build_card(expiry_ms=expiry, rnd=candidate_round, side=c['side'], read_at_ms=tick,
                                      walls=player.values(case, 'L3.expiry_walls'), points=cut, case=case,
                                      contract=c, snapshots=snaps, extra_gaps=[gap],
@@ -326,8 +411,13 @@ def collect(archive_root, expiry, slot, *, startup=False, clock=now_ms, band_sna
                 timestamp_semantics='unverified_minute_label',
                 points=[p for p in points if p[0] <= max(reads)])
     resolved_band = _resolve_band_snapshot(archive_root, min(reads), band_snapshot=band_snapshot)
+    source_label = provenance_override or (
+        'targeted workbench verified native case + Deribit public read'
+        if used_fallback
+        else 'native research archive + Deribit public read'
+    )
     return seal_source(candidates, cards, path, history, instrument_proof, received_at_ms=received,
-                       source='native research archive + Deribit public read', band_snapshot=resolved_band)
+                       source=source_label, band_snapshot=resolved_band)
 
 
 class Dossiers:
@@ -364,11 +454,47 @@ class Dossiers:
             write(target, encode(dict(expected, recorded_at_ms=self.clock())))
         return target.parent
 
-    def note(self, hand, state, reason):
+    def note(self, hand, state, reason, *, diagnostics=None):
+        now = self.clock()
         name = identity('note', state, reason) + '.json'
         out = hand / 'issuance' / name
-        if not out.exists():
-            write(out, encode(dict(state=state, reason=reason, recorded_at_ms=self.clock())))
+        if out.exists():
+            prior = read(out)
+            prior_rec = prior.get('recorded_at_ms')
+            first_at = prior.get('first_recorded_at_ms', prior_rec if type(prior_rec) is int else now)
+            prior_times = prior.get('attempt_times_ms')
+            if not isinstance(prior_times, list) or not prior_times:
+                prior_times = [prior_rec] if type(prior_rec) is int else []
+            payload = dict(
+                state=state,
+                reason=reason,
+                recorded_at_ms=now,
+                first_recorded_at_ms=first_at,
+                attempt_count=int(prior.get('attempt_count') or 1) + 1,
+                attempt_times_ms=[*prior_times, now][-16:],
+            )
+            if 'window_closed_at_ms' in prior:
+                payload['window_closed_at_ms'] = prior['window_closed_at_ms']
+            if diagnostics is not None:
+                prior_diag = prior.get('diagnostics')
+                if isinstance(prior_diag, dict) and isinstance(diagnostics, dict):
+                    payload['diagnostics'] = {**prior_diag, **diagnostics}
+                else:
+                    payload['diagnostics'] = diagnostics
+            elif 'diagnostics' in prior:
+                payload['diagnostics'] = prior['diagnostics']
+            write(out, encode(payload), replace=True)
+        else:
+            payload = dict(
+                state=state,
+                reason=reason,
+                recorded_at_ms=now,
+                first_recorded_at_ms=now,
+                attempt_count=1,
+                attempt_times_ms=[now],
+                **({'diagnostics': diagnostics} if diagnostics is not None else {}),
+            )
+            write(out, encode(payload))
 
     def deal(self, hand, source, *, input_profile=None):
         target = hand / 'evidence'
@@ -458,7 +584,13 @@ class Dossiers:
                 if at >= self.reply_deadline(read(hand / 'expected.json'), meta) and not self.select(hand):
                     self.note(hand, 'REPLY_WINDOW_CLOSED', '截止前没有有效回复，保留所有尝试')
             elif at >= slot + plan['deal_grace_ms']:
-                self.note(hand, 'MISSED', '计划发牌窗口已结束')
+                notes = sorted((hand / 'issuance').glob('*.json'), key=lambda p: read(p)['recorded_at_ms'])
+                if not notes:
+                    self.note(hand, 'MISSED', '计划发牌窗口已结束')
+                else:
+                    latest = read(notes[-1])
+                    if 'window_closed_at_ms' not in latest:
+                        write(notes[-1], encode(dict(latest, window_closed_at_ms=at)), replace=True)
             elif source_for:
                 try:
                     self.deal(hand, source_for(expiry, slot), input_profile=effective_profile)
@@ -1063,8 +1195,17 @@ class Dossiers:
                 if not hands or all(h['sample'] == 'FIXTURE' for h in hands):
                     continue
                 expiry = hands[0]['expiry_ms']
-                if self.clock() >= expiry and not any(read(p)['classification'] == 'OFFICIAL' for p in
-                                                      (folder / 'outcomes').glob('outcome_*/outcome.json')):
+                has_dealt_evidence = any(
+                    (folder / 'hands' / h['hand_id'] / 'evidence' / 'identity.json').is_file()
+                    for h in hands
+                    if h.get('sample') != 'FIXTURE' and isinstance(h.get('hand_id'), str)
+                )
+                existing_outcomes = [read(p) for p in (folder / 'outcomes').glob('outcome_*/outcome.json')]
+                already_settled = (
+                    any(o['classification'] == 'OFFICIAL' for o in existing_outcomes)
+                    or (not has_dealt_evidence and bool(existing_outcomes))
+                )
+                if self.clock() >= expiry and not already_settled:
                     self.official(expiry)
                     yield self.summary(expiry)
             except (OSError, ValueError, KeyError, TypeError) as exc:
