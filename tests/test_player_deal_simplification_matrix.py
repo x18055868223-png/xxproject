@@ -1910,3 +1910,438 @@ def test_new_hand_slow_request_never_blocks_existing_open_hand_hold_reviews(tmp_
         assert deal_out_holder[0]["hand_id"] == EXPECTED_HAND_ID
         assert deal_out_holder[0]["link"]["state"] == "SHADOW_LOCK_CREATED"
 
+
+# ---------------------------------------------------------------------------
+# (j) Final Unification Parity: Real CLI (`main` + subprocess) vs Direct `sync_open()`
+#     Single Implementation, Shared Deadline Scope, & Batch Failure / Exit Codes
+# ---------------------------------------------------------------------------
+
+def test_cli_vs_direct_sync_open_parity_deadline_scope_and_exit_codes(tmp_path, monkeypatch, capsys):
+    import ast
+    import inspect
+    import subprocess
+    import sys
+
+    # 1) Structural single-responsibility check: `main()` delegates to `sync_open` (no duplicate loop or module deadline global)
+    assert not hasattr(tracking, "_ACTIVE_SERVICE_DEADLINE_MONO")
+    assert not hasattr(tracking, "_prioritized_open_link_files")
+    assert not hasattr(tracking, "_merge_sync_open_phases")
+    main_tree = ast.parse(inspect.getsource(tracking.main))
+    called_names = {
+        (node.func.id if isinstance(node.func, ast.Name) else node.func.attr)
+        for node in ast.walk(main_tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, (ast.Name, ast.Attribute))
+    }
+    assert "sync_open" in called_names
+    assert "recover_initial" not in called_names
+    assert "_open_hand_sync_priority_key" not in called_names
+
+    slot_0 = int(datetime(2026, 11, 26, 16, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    accept_put = _strict_p5_reply_text("## Accept / Put", short_strike=60_000, long_strike=58_000, require_outside_at_t0=True)
+    revoke_reply = (
+        '## REVOKE\n\n卖出短腿60,000已被跌破且确认触发M1，立即撤销。\n'
+        '<HOLD_REVIEW_JSON>{"verdict":"REVOKE","affected_conditions":["M1"],"public_reply":"确认触发M1撤销","key_facts":["跌破60000"]}</HOLD_REVIEW_JSON>'
+    )
+
+    def invoke_mode(mode: str, *, wb_url: str, wb_obj, dos_root: Path, arch_root: Path, clk_box: list[int], check_due: bool = True, run_review: bool = True):
+        if mode == "cli":
+            spy_calls: list[int] = []
+            orig_so = tracking.sync_open
+
+            def spy_sync_open(*a, **kw):
+                spy_calls.append(1)
+                return orig_so(*a, **kw)
+
+            argv = ["--url", wb_url, "sync-open", "--root", str(dos_root), "--archive", str(arch_root)]
+            if check_due:
+                argv.append("--check-due")
+            if run_review:
+                argv.append("--review")
+            with monkeypatch.context() as mp_spy:
+                mp_spy.setattr(tracking, "sync_open", spy_sync_open)
+                rc, rows, err_txt = _run_tracking_cli(mp_spy, capsys, argv=argv, clock_box=clk_box)
+            assert spy_calls == [1], "CLI `sync-open` must invoke the single `tracking.sync_open` implementation"
+            batch_err = json.loads(err_txt.strip()) if err_txt.strip().startswith("{") else None
+            return rc, rows, batch_err
+
+        svc = post(wb_url, wb_obj)
+        d_inst = dossier.Dossiers(dos_root, clock=lambda: clk_box[0], require_reply_provenance=True)
+        rows = tracking.sync_open(
+            d_inst,
+            svc,
+            check_due=check_due,
+            archive_root=arch_root,
+            run_review=run_review,
+        )
+        batch = tracking.classify_sync_open_batch(rows)
+        rc = 0 if batch["batch_status"] == "ALL_OK" else 2
+        return rc, rows, (None if rc == 0 else batch)
+
+    # 2) Side-by-side `"cli"` vs `"direct"` parity across all 5 core invariants + shared `service_deadline_mono` scope
+    parity_summary: dict[str, dict] = {}
+    for mode in ("cli", "direct"):
+        mode_dir = tmp_path / mode[:3]
+
+        # (A) Frozen at 16:27Z, exits before first dispatch -> misses :32 -> wakes :35, :40, :45 -> dispatches ONCE
+        clk_a = [slot_0 + 27 * M]
+        wb_a, arch_a, dos_a, plan_a, slot_ms, exp_ms, _, sync_a = _setup_nov26_workbench_and_archive(
+            mode_dir / "a", monkeypatch, clock=clk_a,
+        )
+        wb_a.refresh(now_ms=clk_a[0], record_daily=False)
+        prep_a = wb_a.shadow_tracking(
+            "prepare_deal",
+            {"target_expiry_ms": exp_ms, "slot_ms": slot_ms, "allow_refresh": False, "input_profile": "p0_strict@1"},
+        )
+        src_a = dossier.collect(
+            arch_a, exp_ms, slot_ms, clock=lambda: clk_a[0], candidate_round="r16",
+            fallback_cases=prep_a["cases"],
+            provenance_override="targeted workbench verified native case + Deribit public read",
+            input_profile="p0_strict@1",
+        )
+        d_a = dossier.Dossiers(dos_a, clock=lambda: clk_a[0], require_reply_provenance=True)
+        h_a, = d_a.tick(plan_a, slots=[slot_ms], input_profile="p0_strict@1")
+        d_a.deal(h_a, src_a, input_profile="p0_strict@1")
+
+        with serving(wb_a) as url_a, _sse_mock_server(
+            lambda _i, _b: {"status": 200, "text": accept_put, "finish_reason": "stop"}
+        ) as (ep_a, calls_a):
+            monkeypatch.setenv("ASTRA_AI_SHADOW_LOCK_TOKEN", wb_a.config.shadow_service_token)
+            monkeypatch.setenv("ASTRA_AI_SHADOW_EXPERIMENT", "1")
+            monkeypatch.setenv("LLM_API_KEY", f"k-{mode}-a")
+            monkeypatch.setenv("LLM_MODEL", "deepseek-v4-pro")
+            monkeypatch.setenv("LLM_BASE_URL", ep_a)
+            rcs_a = []
+            for m_off in (35, 40, 45):
+                clk_a[0] = slot_ms + m_off * M
+                sync_a()
+                wb_a.refresh(now_ms=clk_a[0], record_daily=False)
+                rc_a, rows_a, _ = invoke_mode(mode, wb_url=url_a, wb_obj=wb_a, dos_root=dos_a, arch_root=arch_a, clk_box=clk_a)
+                rcs_a.append(rc_a)
+                if m_off == 35:
+                    assert any((r.get("link") or {}).get("state") == "SHADOW_LOCK_CREATED" for r in rows_a)
+            assert rcs_a == [0, 0, 0] and len(calls_a) == 1
+
+        # (B) Sent credential (`dispatch.json`) with unknown receipt -> zero resend + `:35` exit 2 (`FAILED` / `REQUEST_FAILED`), `:40` exit 0
+        clk_b = [slot_0 + 27 * M]
+        wb_b, arch_b, dos_b, plan_b, _, exp_b, _, sync_b = _setup_nov26_workbench_and_archive(
+            mode_dir / "b", monkeypatch, clock=clk_b,
+        )
+        wb_b.refresh(now_ms=clk_b[0], record_daily=False)
+        prep_b = wb_b.shadow_tracking(
+            "prepare_deal",
+            {"target_expiry_ms": exp_b, "slot_ms": slot_ms, "allow_refresh": False, "input_profile": "p0_strict@1"},
+        )
+        src_b = dossier.collect(
+            arch_b, exp_b, slot_ms, clock=lambda: clk_b[0], candidate_round="r16",
+            fallback_cases=prep_b["cases"],
+            provenance_override="targeted workbench verified native case + Deribit public read",
+            input_profile="p0_strict@1",
+        )
+        d_b = dossier.Dossiers(dos_b, clock=lambda: clk_b[0], require_reply_provenance=True)
+        h_b, = d_b.tick(plan_b, slots=[slot_ms], input_profile="p0_strict@1")
+        d_b.deal(h_b, src_b, input_profile="p0_strict@1")
+        att_b = dossier.identity("auto", h_b.name, clk_b[0], "deepseek-v4-pro", 0)
+        dossier.publish(h_b / "api_calls" / att_b, {
+            "dispatch.json": dossier.encode({"started_at_ms": clk_b[0], "requested_at_ms": clk_b[0], "model": "deepseek-v4-pro", "timeout_s": 600.0}),
+        })
+        with serving(wb_b) as url_b, _sse_mock_server(
+            lambda *_a: pytest.fail("unknown receipt must never resend")
+        ) as (ep_b, calls_b):
+            monkeypatch.setenv("ASTRA_AI_SHADOW_LOCK_TOKEN", wb_b.config.shadow_service_token)
+            monkeypatch.setenv("LLM_API_KEY", f"k-{mode}-b")
+            monkeypatch.setenv("LLM_MODEL", "deepseek-v4-pro")
+            monkeypatch.setenv("LLM_BASE_URL", ep_b)
+            clk_b[0] = slot_ms + 35 * M
+            sync_b()
+            rc_b1, _, batch_b1 = invoke_mode(mode, wb_url=url_b, wb_obj=wb_b, dos_root=dos_b, arch_root=arch_b, clk_box=clk_b)
+            clk_b[0] = slot_ms + 40 * M
+            sync_b()
+            rc_b2, rows_b2, _ = invoke_mode(mode, wb_url=url_b, wb_obj=wb_b, dos_root=dos_b, arch_root=arch_b, clk_box=clk_b)
+            assert rc_b1 == 2 and batch_b1["batch_status"] == "FAILED"
+            assert batch_b1["failed_hands"][0]["state"] == "REQUEST_FAILED"
+            assert rc_b2 == 0 and rows_b2 == [] and len(calls_b) == 0
+
+        # (C) Persisted valid `reply.json` -> 0 LLM calls, recovers `Accept` + `SHADOW_LOCK_CREATED` + active sync in 1 tick (`rc == 0`)
+        clk_c = [slot_0 + 27 * M]
+        wb_c, arch_c, dos_c, plan_c, _, exp_c, _, sync_c = _setup_nov26_workbench_and_archive(
+            mode_dir / "c", monkeypatch, clock=clk_c,
+        )
+        wb_c.refresh(now_ms=clk_c[0], record_daily=False)
+        prep_c = wb_c.shadow_tracking(
+            "prepare_deal",
+            {"target_expiry_ms": exp_c, "slot_ms": slot_ms, "allow_refresh": False, "input_profile": "p0_strict@1"},
+        )
+        src_c = dossier.collect(
+            arch_c, exp_c, slot_ms, clock=lambda: clk_c[0], candidate_round="r16",
+            fallback_cases=prep_c["cases"],
+            provenance_override="targeted workbench verified native case + Deribit public read",
+            input_profile="p0_strict@1",
+        )
+        d_c = dossier.Dossiers(dos_c, clock=lambda: clk_c[0], require_reply_provenance=True)
+        h_c, = d_c.tick(plan_c, slots=[slot_ms], input_profile="p0_strict@1")
+        d_c.deal(h_c, src_c, input_profile="p0_strict@1")
+        meta_c = d_c.verify_evidence(h_c)
+        att_c = dossier.identity("auto", h_c.name, clk_c[0], "deepseek-v4-pro", 0)
+        req_c = review.build_initial_request_payload(
+            (h_c / "evidence" / "input.md").read_text(encoding="utf-8"),
+            model="deepseek-v4-pro",
+            prompt_version=review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+            input_profile="p0_strict@1",
+            packet_hash=meta_c["input_sha256"],
+            requested_at_ms=clk_c[0],
+            fidelity="EXACT",
+        )
+        dossier.publish(h_c / "api_calls" / att_c, {
+            "request.json": dossier.encode(review.sanitize_model_request(req_c)),
+            "dispatch.json": dossier.encode({"started_at_ms": clk_c[0], "requested_at_ms": clk_c[0], "model": "deepseek-v4-pro", "timeout_s": 600.0}),
+            "reply.json": dossier.encode({"text": accept_put, "model": "deepseek-v4-pro", "http_status": 200, "decided_at_ms": clk_c[0] + 5_000}),
+        })
+        with serving(wb_c) as url_c, _sse_mock_server(
+            lambda *_a: pytest.fail("persisted valid receipt must never resend")
+        ) as (ep_c, calls_c):
+            monkeypatch.setenv("ASTRA_AI_SHADOW_LOCK_TOKEN", wb_c.config.shadow_service_token)
+            monkeypatch.setenv("LLM_API_KEY", f"k-{mode}-c")
+            monkeypatch.setenv("LLM_MODEL", "deepseek-v4-pro")
+            monkeypatch.setenv("LLM_BASE_URL", ep_c)
+            clk_c[0] = slot_ms + 35 * M
+            sync_c()
+            wb_c.refresh(now_ms=clk_c[0], record_daily=False)
+            rc_c, rows_c, batch_c = invoke_mode(mode, wb_url=url_c, wb_obj=wb_c, dos_root=dos_c, arch_root=arch_c, clk_box=clk_c)
+            assert rc_c == 0 and len(calls_c) == 0, f"mode={mode} rc={rc_c} rows={rows_c!r} batch={batch_c!r}"
+            assert any((r.get("link") or {}).get("state") == "SHADOW_LOCK_CREATED" for r in rows_c)
+            assert any(r.get("state") == "active" for r in rows_c)
+
+        # (D) Expired (`now >= reply_deadline`) -> 0 dispatches, `REPLY_WINDOW_CLOSED`, `DISPATCH_EXPIRED`
+        clk_d = [slot_0 + 2 * M]
+        wb_d, arch_d, dos_d, plan_d, _, exp_d, _, sync_d = _setup_nov26_workbench_and_archive(
+            mode_dir / "d", monkeypatch, clock=clk_d,
+        )
+        wb_d.refresh(now_ms=clk_d[0], record_daily=False)
+        prep_d = wb_d.shadow_tracking(
+            "prepare_deal",
+            {"target_expiry_ms": exp_d, "slot_ms": slot_ms, "allow_refresh": False, "input_profile": "p0_strict@1"},
+        )
+        src_d = dossier.collect(
+            arch_d, exp_d, slot_ms, clock=lambda: clk_d[0], candidate_round="r16",
+            fallback_cases=prep_d["cases"],
+            provenance_override="targeted workbench verified native case + Deribit public read",
+            input_profile="p0_strict@1",
+        )
+        d_d = dossier.Dossiers(dos_d, clock=lambda: clk_d[0], require_reply_provenance=True)
+        h_d, = d_d.tick(plan_d, slots=[slot_ms], input_profile="p0_strict@1")
+        d_d.deal(h_d, src_d, input_profile="p0_strict@1")
+        with serving(wb_d) as url_d, _sse_mock_server(
+            lambda *_a: pytest.fail("expired hand must never dispatch")
+        ) as (ep_d, calls_d):
+            monkeypatch.setenv("ASTRA_AI_SHADOW_LOCK_TOKEN", wb_d.config.shadow_service_token)
+            monkeypatch.setenv("LLM_API_KEY", f"k-{mode}-d")
+            monkeypatch.setenv("LLM_MODEL", "deepseek-v4-pro")
+            monkeypatch.setenv("LLM_BASE_URL", ep_d)
+            clk_d[0] = slot_ms + 35 * M  # >= 16:32Z reply_deadline
+            sync_d()
+            rc_d, rows_d, _ = invoke_mode(mode, wb_url=url_d, wb_obj=wb_d, dos_root=dos_d, arch_root=arch_d, clk_box=clk_d)
+            assert rc_d == 0 and rows_d == [] and len(calls_d) == 0
+            assert tracking.audit_record(h_d, clk_d[0], {})["stage"] == "DISPATCH_EXPIRED"
+
+        # (E) Hold review precedes slow new-hand recovery AND shares the single `service_deadline_mono` scope (`520s - 120s - 20s = 380s`)
+        clk_e = [slot_0 + 2 * M]
+        wb_e, arch_e, dos_e, plan_e, _, exp_e, _, sync_e = _setup_nov26_workbench_and_archive(
+            mode_dir / "e", monkeypatch, clock=clk_e,
+        )
+        wb_e.refresh(now_ms=clk_e[0], record_daily=False)
+        prep_e = wb_e.shadow_tracking(
+            "prepare_deal",
+            {"target_expiry_ms": exp_e, "slot_ms": slot_ms, "allow_refresh": False, "input_profile": "p0_strict@1"},
+        )
+        src_e = dossier.collect(
+            arch_e, exp_e, slot_ms, clock=lambda: clk_e[0], candidate_round="r16",
+            fallback_cases=prep_e["cases"],
+            provenance_override="targeted workbench verified native case + Deribit public read",
+            input_profile="p0_strict@1",
+        )
+        d_e = dossier.Dossiers(dos_e, clock=lambda: clk_e[0], require_reply_provenance=True)
+        h_open_e = d_e.expect(exp_e, "AD_HOC", reference=f"open-{mode}")
+        d_e.deal(h_open_e, src_e, input_profile="p0_strict@1")
+        with serving(wb_e) as url_e:
+            svc_e = post(url_e, wb_e)
+            init_open = tracking._deal_hand(
+                d_e,
+                h_open_e,
+                svc_e,
+                tracking._llm_settings({
+                    "api_key": f"k-{mode}-e",
+                    "model": "deepseek-v4-pro",
+                    "transport": lambda *_a, **_kw: {"choices": [{"finish_reason": "stop", "message": {"content": accept_put}}]},
+                }),
+                prompt_version=review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+                input_profile="p0_strict@1",
+            )
+            ep_open_e = h_open_e.parent.parent / "episodes" / init_open["link"]["origin"]["dossier_episode_id"]
+
+            clk_e[0] = slot_ms + 27 * M
+            sync_e()
+            wb_e.refresh(now_ms=clk_e[0], record_daily=False)
+            prep_e27 = wb_e.shadow_tracking(
+                "prepare_deal",
+                {"target_expiry_ms": exp_e, "slot_ms": slot_ms, "allow_refresh": False, "input_profile": "p0_strict@1"},
+            )
+            src_e27 = dossier.collect(
+                arch_e, exp_e, slot_ms, clock=lambda: clk_e[0], candidate_round="r16",
+                fallback_cases=prep_e27["cases"],
+                provenance_override="targeted workbench verified native case + Deribit public read",
+                input_profile="p0_strict@1",
+            )
+            h_new_e, = d_e.tick(plan_e, slots=[slot_ms], input_profile="p0_strict@1")
+            d_e.deal(h_new_e, src_e27, input_profile="p0_strict@1")
+
+            clk_e[0] = slot_ms + 40 * M
+            sync_e()
+            wb_e.refresh(now_ms=clk_e[0], record_daily=False)
+            d_e.event(
+                ep_open_e,
+                dossier.identity("chk_e", clk_e[0] - M),
+                "CONDITION_TRIGGERED",
+                {"result": {"status": "triggered", "rule": "entry_not_returned"}},
+                observed=clk_e[0] - M,
+                available=clk_e[0],
+            )
+
+            mono_box = [10_000.0]
+            seen_calls_e: list[tuple[str, float]] = []
+            orig_call_llm = review.call_chat_llm
+
+            def spy_call_chat_llm(messages, **kwargs):
+                sys_txt = str((messages[0] if messages else {}).get("content") or "")
+                kind_lbl = "hold_review" if ("HOLD_REVIEW_JSON" in sys_txt or "ANNOTATION_JSON" not in sys_txt) else "initial_deal"
+                seen_calls_e.append((kind_lbl, round(float(kwargs["timeout_s"]), 1)))
+                res = orig_call_llm(messages, **kwargs)
+                if kind_lbl == "hold_review":
+                    mono_box[0] += 120.0  # Simulate 120s spent inside Phase 3 hold review
+                return res
+
+            def sse_e(_idx: int, body: dict) -> dict:
+                sys_txt = str(((body.get("messages") or [{}])[0]).get("content") or "")
+                if "HOLD_REVIEW_JSON" in sys_txt or "ANNOTATION_JSON" not in sys_txt:
+                    return {"status": 200, "text": revoke_reply, "finish_reason": "stop"}
+                clk_e[0] = slot_ms + 44 * M
+                sync_e()
+                wb_e.refresh(now_ms=clk_e[0], record_daily=False)
+                return {"status": 200, "text": accept_put, "finish_reason": "stop"}
+
+            with _sse_mock_server(sse_e) as (ep_e_url, _), monkeypatch.context() as mp_e:
+                mp_e.setenv("ASTRA_AI_SHADOW_LOCK_TOKEN", wb_e.config.shadow_service_token)
+                mp_e.setenv("ASTRA_PLAYER_SERVICE_BUDGET_SEC", "520")
+                mp_e.setenv("LLM_API_KEY", f"k-{mode}-e")
+                mp_e.setenv("LLM_MODEL", "deepseek-v4-pro")
+                mp_e.setenv("LLM_BASE_URL", ep_e_url)
+                mp_e.setattr(tracking.time, "monotonic", lambda: mono_box[0])
+                mp_e.setattr(review, "call_chat_llm", spy_call_chat_llm)
+                rc_e, _, _ = invoke_mode(mode, wb_url=url_e, wb_obj=wb_e, dos_root=dos_e, arch_root=arch_e, clk_box=clk_e)
+                assert rc_e == 0
+
+            # Hold review ran FIRST (`min(600, 520 - 20) = 500.0s`), consumed 120s of the 520s scope, so Phase 4 got `520 - 120 - 20 = 380.0s`!
+            assert seen_calls_e == [("hold_review", 500.0), ("initial_deal", 380.0)]
+            assert (h_open_e / "tracking" / "shadow_exit.json").is_file()
+            assert (h_new_e / "tracking" / "link.json").is_file()
+            parity_summary[mode] = {
+                "rcs_a": rcs_a,
+                "rc_b": (rc_b1, rc_b2, batch_b1["batch_status"], batch_b1["failed_hands"][0]["state"]),
+                "rc_c": rc_c,
+                "rc_d": rc_d,
+                "seen_calls_e": seen_calls_e,
+            }
+
+    assert parity_summary["cli"] == parity_summary["direct"]
+
+    # 3) Batch failure classification & exit-code matrix (`DEGRADED` vs `FAILED` vs `ALL_OK`) including real OS subprocess CLI!
+    clk_f = [slot_0 + 2 * M]
+    wb_f, arch_f, dos_f, _, _, exp_f, _, sync_f = _setup_nov26_workbench_and_archive(
+        tmp_path / "f", monkeypatch, clock=clk_f,
+    )
+    wb_f.refresh(now_ms=clk_f[0], record_daily=False)
+    prep_f = wb_f.shadow_tracking(
+        "prepare_deal",
+        {"target_expiry_ms": exp_f, "slot_ms": slot_0, "allow_refresh": False, "input_profile": "p0_strict@1"},
+    )
+    src_f = dossier.collect(
+        arch_f, exp_f, slot_0, clock=lambda: clk_f[0], candidate_round="r16",
+        fallback_cases=prep_f["cases"],
+        provenance_override="targeted workbench verified native case + Deribit public read",
+        input_profile="p0_strict@1",
+    )
+    d_f = dossier.Dossiers(dos_f, clock=lambda: clk_f[0], require_reply_provenance=True)
+    h_ok = d_f.expect(exp_f, "AD_HOC", reference="exit-ok-hand")
+    d_f.deal(h_ok, src_f, input_profile="p0_strict@1")
+    h_bad = d_f.expect(exp_f, "AD_HOC", reference="exit-corrupt-terminal-hand")
+    d_f.deal(h_bad, src_f, input_profile="p0_strict@1")
+
+    accept_call = _strict_p5_reply_text("## Accept / Call", short_strike=61_000, long_strike=63_000, require_outside_at_t0=True)
+    with serving(wb_f) as url_f:
+        svc_f = post(url_f, wb_f)
+        for h_item, reply_txt in ((h_ok, accept_put), (h_bad, accept_call)):
+            r_init = tracking._deal_hand(
+                d_f,
+                h_item,
+                svc_f,
+                tracking._llm_settings({
+                    "api_key": "k-f",
+                    "model": "deepseek-v4-pro",
+                    "transport": lambda *_a, _t=reply_txt, **_kw: {"choices": [{"finish_reason": "stop", "message": {"content": _t}}]},
+                }),
+                prompt_version=review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+                input_profile="p0_strict@1",
+            )
+            assert r_init["link"]["state"] == "SHADOW_LOCK_CREATED"
+
+        # ALL_OK via real OS subprocess (`exit 0`, empty stderr)
+        script_path = Path(tracking.__file__).resolve()
+        sub_env = {**dict(__import__("os").environ), "ASTRA_AI_SHADOW_LOCK_TOKEN": wb_f.config.shadow_service_token}
+        proc_ok = subprocess.run(
+            [sys.executable, str(script_path), "--url", url_f, "sync-open", "--root", str(dos_f)],
+            env=sub_env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert proc_ok.returncode == 0, f"stderr={proc_ok.stderr} stdout={proc_ok.stdout}"
+        assert proc_ok.stderr == ""
+
+        # Inject corrupt `terminal.json` pointing to missing export manifest on `h_bad` -> `DEGRADED` (`ok_count=1, failed_count=1, exit 2`)
+        dossier.write(h_bad / "tracking" / "terminal.json", dossier.encode({"export_id": "track_missing_000000", "full_series": True}), replace=True)
+        proc_deg = subprocess.run(
+            [sys.executable, str(script_path), "--url", url_f, "sync-open", "--root", str(dos_f)],
+            env=sub_env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert proc_deg.returncode == 2
+        deg_batch = json.loads(proc_deg.stderr.strip())
+        assert deg_batch["batch_status"] == "DEGRADED"
+        assert deg_batch["ok_count"] == 1 and deg_batch["failed_count"] == 1
+        assert deg_batch["failed_hands"][0]["hand_id"] == h_bad.name
+        assert deg_batch["failed_hands"][0]["state"] == "TRACKER_EXPORT_UNAVAILABLE"
+
+        # Compare against direct `tracking.sync_open` on the exact same dossier state
+        direct_deg_rows = tracking.sync_open(dossier.Dossiers(dos_f), svc_f)
+        assert tracking.classify_sync_open_batch(direct_deg_rows) == deg_batch
+
+        # Remove healthy `h_ok` link so only failing `h_bad` remains -> `FAILED` (`ok_count=0, failed_count=1, exit 2`)
+        (h_ok / "tracking" / "link.json").unlink()
+        proc_fail = subprocess.run(
+            [sys.executable, str(script_path), "--url", url_f, "sync-open", "--root", str(dos_f)],
+            env=sub_env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert proc_fail.returncode == 2
+        fail_batch = json.loads(proc_fail.stderr.strip())
+        assert fail_batch["batch_status"] == "FAILED"
+        assert fail_batch["ok_count"] == 0 and fail_batch["failed_count"] == 1
+        assert tracking.classify_sync_open_batch(tracking.sync_open(dossier.Dossiers(dos_f), svc_f)) == fail_batch
+
+

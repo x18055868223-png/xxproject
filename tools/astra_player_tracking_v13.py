@@ -1381,27 +1381,11 @@ def _llm_settings(llm_config=None):
         out['fallback_transport'] = cfg['fallback_transport']
     if cfg.get('service_deadline_mono') is not None:
         out['service_deadline_mono'] = float(cfg['service_deadline_mono'])
-    elif _ACTIVE_SERVICE_DEADLINE_MONO is not None:
-        out['service_deadline_mono'] = float(_ACTIVE_SERVICE_DEADLINE_MONO)
     if 'stream' in cfg and cfg['stream'] is not None:
         out['stream'] = bool(cfg['stream'])
     if isinstance(cfg.get('max_initial_attempts'), int) and cfg['max_initial_attempts'] >= 1:
         out['max_initial_attempts'] = cfg['max_initial_attempts']
     return out
-
-
-_ACTIVE_SERVICE_DEADLINE_MONO = None
-
-
-@contextmanager
-def _scoped_service_deadline(deadline_mono):
-    global _ACTIVE_SERVICE_DEADLINE_MONO
-    prev = _ACTIVE_SERVICE_DEADLINE_MONO
-    _ACTIVE_SERVICE_DEADLINE_MONO = deadline_mono
-    try:
-        yield
-    finally:
-        _ACTIVE_SERVICE_DEADLINE_MONO = prev
 
 
 def _record_revoke_shadow_action(d, episode, frozen, quote, at, *, review_id):
@@ -2746,7 +2730,12 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
     eff_service_deadline = (
         float(cfg['service_deadline_mono'])
         if isinstance(cfg, dict) and cfg.get('service_deadline_mono') is not None
-        else None
+        else (
+            time.monotonic() + float(cfg['service_budget_s'])
+            if (isinstance(llm_config, dict) and llm_config.get('service_budget_s') is not None)
+            or _env_str('ASTRA_PLAYER_SERVICE_BUDGET_SEC') is not None
+            else None
+        )
     )
     check_ev_list = [e for e in ep_events if str(e.get('kind', '')).startswith('CONDITION_')]
     cond_summary = _condition_check_summary(check_ev_list, asof_ms=at, check_clock=frozen['check_clock'],
@@ -3525,7 +3514,7 @@ def _recover_condition_plan(hand, decision):
     if isinstance(saved_plan, dict) and saved_plan.get('invalidation'):
         return saved_plan
     if att_id:
-        att = optional(hand / 'responses' / att_id / 'attempt.json') or {}
+        att = optional(hand / 'responses' / dossier.key(att_id) / 'attempt.json') or {}
         ann = att.get('annotation') if isinstance(att.get('annotation'), dict) else {}
         if ann.get('invalidation') in dossier.condition.RULES and isinstance(ann.get('check_interval_ms'), int):
             return {k: ann[k] for k in ('invalidation', 'check_interval_ms', 'historical_facts',
@@ -6715,6 +6704,8 @@ def prewarm(plan, archive, service, *, clock=dossier.now_ms, public=dossier.publ
 
 
 def _open_hand_sync_priority_key(link_file):
+    if (link_file.parent / 'terminal.json').is_file() or (link_file.parent / 'shadow_exit.json').is_file():
+        return (2, 0, str(link_file))
     hand = link_file.parent.parent
     exp = optional(hand / 'expected.json') or {}
     expiry_ms = int(exp.get('expiry_ms') or 0)
@@ -6735,49 +6726,8 @@ def _open_hand_sync_priority_key(link_file):
     return (0 if has_urgent_trigger else 1, expiry_ms, str(link_file))
 
 
-def _prioritized_open_link_files(d):
-    active_links = []
-    for cand_link in sorted((d.root / 'dossiers').glob('*/hands/hand_*/tracking/link.json')):
-        cand_hand = cand_link.parent.parent
-        try:
-            terminal = optional(cand_link.parent / 'terminal.json')
-            if terminal:
-                meta = load(cand_link.parent / 'exports' / dossier.key(terminal['export_id']) / 'manifest.json')
-                if meta.get('settlement_state') == 'settled':
-                    continue
-            sx = optional(cand_link.parent / 'shadow_exit.json')
-            if (isinstance(sx, dict)
-                    and (sx.get('exit_state') == 'SHADOW_EXITED' or sx.get('state') == 'SHADOW_EXITED')
-                    and sx.get('tracker_stopped') is True
-                    and d.clock() < load(cand_hand / 'expected.json')['expiry_ms'] + 2 * dossier.MINUTE):
-                continue
-        except (Blocked, OSError, ValueError, KeyError, TypeError):
-            pass
-        active_links.append(cand_link)
-    active_links.sort(key=_open_hand_sync_priority_key)
-    return active_links
-
-
-def _merge_sync_open_phases(d, service, phase1_rows, mid_rows, *, run_review=False, llm_config=None, service_deadline_mono=None):
-    post_rows = []
-    if run_review:
-        post_rows = recover_initial(
-            d,
-            service,
-            llm_config=llm_config,
-            allow_post_window_retry=True,
-            service_deadline_mono=service_deadline_mono,
-        )
-    superseded_hands = {r.get('hand_id') for r in post_rows if isinstance(r, dict) and r.get('hand_id')}
-    kept_phase1 = [
-        r for r in phase1_rows
-        if not (isinstance(r, dict) and r.get('hand_id') in superseded_hands)
-    ]
-    return [*kept_phase1, *mid_rows, *post_rows]
-
-
 def sync_open(d, service, *, check_due=False, archive_root=None, run_review=False, llm_config=None):
-    """Reconcile receipts/locks, prioritize active open-hand checks & hold reviews, then run post-window initial recovery."""
+    """Single orchestrator for `sync-open`: receipt recovery -> lock handoffs -> open-hand hold reviews -> post-window deal recovery."""
     eff_cfg = _llm_settings(llm_config) if run_review else None
     service_deadline_mono = None
     if run_review and isinstance(eff_cfg, dict):
@@ -6789,71 +6739,96 @@ def sync_open(d, service, *, check_due=False, archive_root=None, run_review=Fals
         )
         eff_cfg = {**eff_cfg, 'service_deadline_mono': service_deadline_mono}
 
-    with _scoped_service_deadline(service_deadline_mono):
-        phase1_rows = recover_initial(d, service, allow_post_window_retry=False)
-        out = []
-        for request_file in sorted((d.root / 'dossiers').glob('*/hands/hand_*/tracking/request.json')):
-            hand = request_file.parent.parent
-            try:
-                if (request_file.parent / 'link.json').exists() or _link_blocked(request_file.parent):
-                    continue
-                expiry = load(hand / 'expected.json')['expiry_ms']
-                if d.clock() < expiry:
-                    link_res = _link_with_fresh_quote(d, hand, service)
-                    if isinstance(link_res, dict) and 'hand_id' not in link_res:
-                        link_res = {**link_res, 'hand_id': hand.name,
-                                    'dossier_id': hand.parent.parent.name, 'phase': 'request'}
-                    out.append(link_res)
-                    with _short_writer(d):
-                        d.summary(expiry)
-            except (Blocked, OSError, ValueError, KeyError, TypeError) as exc:
-                out.append(dict(
-                    state='LINK_UNVERIFIED',
-                    hand_id=hand.name,
-                    dossier_id=hand.parent.parent.name,
-                    phase='request',
-                    error=type(exc).__name__,
-                    reason=getattr(exc, 'code', type(exc).__name__),
-                ))
-        for link_file in _prioritized_open_link_files(d):
-            hand = link_file.parent.parent
-            try:
-                sync_row = sync(
-                    d,
-                    hand,
-                    service,
-                    check_due=check_due,
-                    archive_root=archive_root,
-                    run_review=run_review,
-                    llm_config=eff_cfg,
-                )
-                out.append(sync_row)
+    # Phase 1: Receipt-only initial reconciliation (0 LLM HTTP; promotes persisted replies/verdicts to locks).
+    phase1_rows = recover_initial(d, service, allow_post_window_retry=False)
+    out = []
+
+    # Phase 2: Pending native lock handoffs (0 LLM HTTP).
+    for request_file in sorted((d.root / 'dossiers').glob('*/hands/hand_*/tracking/request.json')):
+        hand = request_file.parent.parent
+        try:
+            if (request_file.parent / 'link.json').exists() or _link_blocked(request_file.parent):
+                continue
+            expiry = load(hand / 'expected.json')['expiry_ms']
+            if d.clock() < expiry:
+                link_res = _link_with_fresh_quote(d, hand, service)
+                if isinstance(link_res, dict) and 'hand_id' not in link_res:
+                    link_res = {**link_res, 'hand_id': hand.name,
+                                'dossier_id': hand.parent.parent.name, 'phase': 'request'}
+                out.append(link_res)
                 with _short_writer(d):
+                    d.summary(expiry)
+        except (Blocked, OSError, ValueError, KeyError, TypeError) as exc:
+            out.append(dict(
+                state='LINK_UNVERIFIED',
+                hand_id=hand.name,
+                dossier_id=hand.parent.parent.name,
+                phase='request',
+                error=type(exc).__name__,
+                reason=getattr(exc, 'code', type(exc).__name__),
+            ))
+
+    # Phase 3: Active open positions grid checks & hold reviews (highest LLM priority).
+    for link_file in sorted(
+        (d.root / 'dossiers').glob('*/hands/hand_*/tracking/link.json'),
+        key=_open_hand_sync_priority_key,
+    ):
+        hand = link_file.parent.parent
+        try:
+            terminal = optional(link_file.parent / 'terminal.json')
+            if terminal:
+                meta = load(link_file.parent / 'exports' / dossier.key(terminal['export_id']) / 'manifest.json')
+                if meta.get('settlement_state') == 'settled':
+                    continue
+            sx = optional(link_file.parent / 'shadow_exit.json')
+            if (isinstance(sx, dict)
+                    and (sx.get('exit_state') == 'SHADOW_EXITED' or sx.get('state') == 'SHADOW_EXITED')
+                    and sx.get('tracker_stopped') is True
+                    and d.clock() < load(hand / 'expected.json')['expiry_ms'] + 2 * dossier.MINUTE):
+                continue
+            out.append(sync(
+                d,
+                hand,
+                service,
+                check_due=check_due,
+                archive_root=archive_root,
+                run_review=run_review,
+                llm_config=eff_cfg,
+            ))
+            with _short_writer(d):
+                d.summary(load(hand / 'expected.json')['expiry_ms'])
+        except (Blocked, OSError, ValueError, KeyError, TypeError) as exc:
+            try:
+                with _short_writer(d):
+                    d.note(hand, 'TRACKER_EXPORT_UNAVAILABLE', getattr(exc, 'code', type(exc).__name__))
                     d.summary(load(hand / 'expected.json')['expiry_ms'])
-            except (Blocked, OSError, ValueError, KeyError, TypeError) as exc:
-                try:
-                    with _short_writer(d):
-                        d.note(hand, 'TRACKER_EXPORT_UNAVAILABLE', getattr(exc, 'code', type(exc).__name__))
-                        d.summary(load(hand / 'expected.json')['expiry_ms'])
-                except Exception:
-                    pass
-                out.append(dict(
-                    state='TRACKER_EXPORT_UNAVAILABLE',
-                    hand_id=hand.name,
-                    dossier_id=hand.parent.parent.name,
-                    phase='sync',
-                    error=type(exc).__name__,
-                    reason=getattr(exc, 'code', type(exc).__name__),
-                ))
-        return _merge_sync_open_phases(
+            except Exception:
+                pass
+            out.append(dict(
+                state='TRACKER_EXPORT_UNAVAILABLE',
+                hand_id=hand.name,
+                dossier_id=hand.parent.parent.name,
+                phase='sync',
+                error=type(exc).__name__,
+                reason=getattr(exc, 'code', type(exc).__name__),
+            ))
+
+    # Phase 4: Post-window initial dispatch/retry for frozen scheduled hands (lowest LLM priority).
+    post_rows = []
+    if run_review:
+        post_rows = recover_initial(
             d,
             service,
-            phase1_rows,
-            out,
-            run_review=run_review,
             llm_config=eff_cfg,
+            allow_post_window_retry=True,
             service_deadline_mono=service_deadline_mono,
         )
+    superseded_hands = {r.get('hand_id') for r in post_rows if isinstance(r, dict) and r.get('hand_id')}
+    kept_phase1 = [
+        r for r in phase1_rows
+        if not (isinstance(r, dict) and r.get('hand_id') in superseded_hands)
+    ]
+    return [*kept_phase1, *out, *post_rows]
 
 
 _SYNC_OPEN_FAILED_STATES = {'LINK_UNVERIFIED', 'LOCK_BLOCKED', 'TRACKER_EXPORT_UNAVAILABLE'}
@@ -6963,89 +6938,13 @@ def main():
                 with _short_writer(d):
                     d.summary(load(hand / 'expected.json')['expiry_ms'])
             elif args.command == 'sync-open':
-                global _ACTIVE_SERVICE_DEADLINE_MONO
-                _prev_sync_dl = _ACTIVE_SERVICE_DEADLINE_MONO
-                _cli_sync_dl = None
-                _cli_eff_cfg = None
-                if args.review:
-                    _cli_eff_cfg = _llm_settings()
-                    _cli_sync_dl = (
-                        float(_cli_eff_cfg['service_deadline_mono'])
-                        if _cli_eff_cfg.get('service_deadline_mono') is not None
-                        else time.monotonic() + float(_cli_eff_cfg.get('service_budget_s') or 810.0)
-                    )
-                    _cli_eff_cfg = {**_cli_eff_cfg, 'service_deadline_mono': _cli_sync_dl}
-                    _ACTIVE_SERVICE_DEADLINE_MONO = _cli_sync_dl
-                phase1_rows = recover_initial(d, service, allow_post_window_retry=False)
-                out = []
-                for request_file in sorted((d.root / 'dossiers').glob('*/hands/hand_*/tracking/request.json')):
-                    hand = request_file.parent.parent
-                    try:
-                        if (request_file.parent / 'link.json').exists() or _link_blocked(request_file.parent):
-                            continue
-                        expiry = load(hand / 'expected.json')['expiry_ms']
-                        if d.clock() < expiry:
-                            link_res = _link_with_fresh_quote(d, hand, service)
-                            if isinstance(link_res, dict) and 'hand_id' not in link_res:
-                                link_res = {**link_res, 'hand_id': hand.name,
-                                            'dossier_id': hand.parent.parent.name, 'phase': 'request'}
-                            out.append(link_res)
-                            with _short_writer(d):
-                                d.summary(expiry)
-                    except (Blocked, OSError, ValueError, KeyError, TypeError) as exc:
-                        out.append(dict(
-                            state='LINK_UNVERIFIED',
-                            hand_id=hand.name,
-                            dossier_id=hand.parent.parent.name,
-                            phase='request',
-                            error=type(exc).__name__,
-                            reason=getattr(exc, 'code', type(exc).__name__),
-                        ))
-                for link_file in _prioritized_open_link_files(d):
-                    hand = link_file.parent.parent
-                    try:
-                        terminal = optional(link_file.parent / 'terminal.json')
-                        if terminal:
-                            meta = load(link_file.parent / 'exports' / dossier.key(terminal['export_id']) / 'manifest.json')
-                            if meta.get('settlement_state') == 'settled':
-                                continue
-                        sx = optional(link_file.parent / 'shadow_exit.json')
-                        if (isinstance(sx, dict)
-                                and (sx.get('exit_state') == 'SHADOW_EXITED' or sx.get('state') == 'SHADOW_EXITED')
-                                and sx.get('tracker_stopped') is True
-                                and d.clock() < load(hand / 'expected.json')['expiry_ms'] + 2 * dossier.MINUTE):
-                            continue
-                        out.append(sync(d, hand, service, check_due=args.check_due,
-                                        archive_root=args.archive, run_review=args.review))
-                        with _short_writer(d):
-                            d.summary(load(hand / 'expected.json')['expiry_ms'])
-                    except (Blocked, OSError, ValueError, KeyError, TypeError) as exc:
-                        try:
-                            with _short_writer(d):
-                                d.note(hand, 'TRACKER_EXPORT_UNAVAILABLE', getattr(exc, 'code', type(exc).__name__))
-                                d.summary(load(hand / 'expected.json')['expiry_ms'])
-                        except Exception:
-                            pass
-                        out.append(dict(
-                            state='TRACKER_EXPORT_UNAVAILABLE',
-                            hand_id=hand.name,
-                            dossier_id=hand.parent.parent.name,
-                            phase='sync',
-                            error=type(exc).__name__,
-                            reason=getattr(exc, 'code', type(exc).__name__),
-                        ))
-                try:
-                    out = _merge_sync_open_phases(
-                        d,
-                        service,
-                        phase1_rows,
-                        out,
-                        run_review=bool(args.review),
-                        llm_config=_cli_eff_cfg,
-                        service_deadline_mono=_cli_sync_dl,
-                    )
-                finally:
-                    _ACTIVE_SERVICE_DEADLINE_MONO = _prev_sync_dl
+                out = sync_open(
+                    d,
+                    service,
+                    check_due=args.check_due,
+                    archive_root=args.archive,
+                    run_review=args.review,
+                )
             else:
                 hand = hand_path(args.root, args.dossier, args.hand)
                 out = (_link_with_fresh_quote(d, hand, service, dossier.read(args.condition) if args.condition else None)
