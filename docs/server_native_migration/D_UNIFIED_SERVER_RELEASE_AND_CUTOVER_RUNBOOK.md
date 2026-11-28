@@ -104,4 +104,4 @@ sudo python3 /opt/xxproject/current/tools/xxproject_server_health_v1.py \
 - **未来实盘执行边界硬约定（严禁混层）：**
   1. **只作为独立消费端接入：** 实盘执行层仅能消费已冻结的 AI Player 输出契约（`decision.json` / 合约绑定四腿 / 净信用与破坏阈值），**严禁写入** `Signal Producer`、`Workbench UI` 路由或 AI Player Prompt/选择标准。
   2. **独立风控闸门与硬件隔离：** 必须经过独立风控闸门（最大仓位、保证金上限、滑点/最小净信用门槛、重复下单幂等键 `request_key`、全局 Kill Switch）后，方可通过独立实盘密钥配置文件发单；`SHADOW_ONLY` 配置继续作为发布默认边界。
-  3. **准入前提：** 实盘执行模块接入前必须单独完成离线确定性回放、交易所测试网/小额 dry-run 及断网超时幂等验收，不得借本次服务器原生化暗开执行权限。
+  3. **准入前提：** 实盘执行模块按唯一路线推进：`自然影子轮取证 → 准备 Deribit 主网接入（以目标执行环境配置并确认可用的正式主网 API Key 为准入信号）→ 受控金额实盘验证`；详见 [LIVE_EXECUTION_ACCESS_PLAN.md](../live_execution/LIVE_EXECUTION_ACCESS_PLAN.md) 与 [PRELIVE_VERIFICATION_RUNBOOK.md](../live_execution/PRELIVE_VERIFICATION_RUNBOOK.md)，不得借常规服务端发布暗开执行权限。

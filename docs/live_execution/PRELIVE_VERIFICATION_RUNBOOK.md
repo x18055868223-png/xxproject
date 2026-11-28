@@ -1,13 +1,18 @@
-# xxproject 实盘前 Linux 与 Testnet 联机补验操作手册
+# xxproject 执行层 Linux 隔离验收与受控主网实盘验收清单
 
-> 当前阶段：`PRELIVE_BLOCKED`（尚未授权真实资金交易；不得在未获 P4 明确授权前解除 `--mode SHADOW_ONLY` 或接入主网写权限）。
+> 权威实盘路线与缺口清单见 [LIVE_EXECUTION_ACCESS_PLAN.md](LIVE_EXECUTION_ACCESS_PLAN.md)；行为合同以 `live-exec-behavior@1.2.0` 与当前源码为准（Testnet 已退出路线）。  
+> **当前状态**：`SHADOW_ONLY`（已上线 `4f97732b`；**真实交易写权限关闭**，未完成主网 `LIVE` 适配与正式主网 API Key 准入核验前，严禁在生产启用非 `SHADOW_ONLY` 模式）。
+
+**唯一执行路线**：**`阶段 1：自然影子轮取证` → `阶段 2：准备 Deribit 主网接入` → `阶段 3：受控金额实盘验证`**。
+
+---
 
 ## 1. Linux 主机 UID / Group 与双令牌准备
 
-在目标 Linux 主机执行（全部执行级密钥均由 `root` 持有并通过 systemd `LoadCredential` 注入，不得写入 `workbench-v20.env`、`llm.env` 或 `research.env`）：
+在目标 Linux 主机执行（全部执行级密钥均由 `root` 持有并通过 systemd `LoadCredential` 或 `0600 root:root` 环境文件注入，不得写入 `workbench-v20.env`、`llm.env` 或 `research.env`）：
 
 ```bash
-# 1) 创建独立系统用户与组（禁止 bitnami 或 astra-workbench 加入 astra-exec 或共享 UID）
+# 1) 创建独立系统用户与共享组（禁止 bitnami 或 astra-workbench 加入 astra-exec 或共享 UID）
 sudo groupadd --system research || true
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin astra-exec || true
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin astra-workbench || true
@@ -21,7 +26,8 @@ openssl rand -hex 32 | sudo tee /etc/signal-audit/exec-control.token >/dev/null
 sudo chmod 0600 /etc/signal-audit/exec-control.token
 sudo chown root:root /etc/signal-audit/exec-control.token
 
-# 3) 配置协调器环境文件（ASTRA_EXEC_ALLOWED_PEER_UIDS 留空以严格使用 {0, astra-exec}；启用 Testnet 时必须设置 ASTRA_EXEC_SUBACCOUNT_ID）
+# 3) 配置协调器环境文件（ASTRA_EXEC_ALLOWED_PEER_UIDS 留空以严格使用 {0, astra-exec}）
+#    进入阶段 2/3 主网接入前，经安全通道在此填入主网 ASTRA_EXEC_ENV_TAG、ASTRA_EXEC_SUBACCOUNT_ID 与专用子账户 Key
 sudo cp deploy/xxproject_server/systemd_units_execution/exec-coordinator.env.example /etc/signal-audit/exec-coordinator.env
 sudo chmod 0600 /etc/signal-audit/exec-coordinator.env
 sudo chown root:root /etc/signal-audit/exec-coordinator.env
@@ -30,84 +36,72 @@ sudo chown root:root /etc/signal-audit/exec-coordinator.env
 sudo sysctl -w kernel.yama.ptrace_scope=1
 ```
 
-## 2. 发布包构建、隔离部署与 Linux 反向安全验收
+---
+
+## 2. 发布包构建、原子部署与 Linux 反向安全验收
 
 ```bash
 # 构建单一不可变发布包（默认拒绝脏工作树，必须干净提交后再打正式包）
 python3 deploy/xxproject_server/build_release.py --output /tmp/xxproject_release.tar.gz
 
-# 应用 21 基线 + 执行隔离单元（默认 SHADOW_ONLY；未满足双令牌与三独立 UID 前 deploy_release 直接 fail-closed）
-sudo python3 deploy/xxproject_server/deploy_release.py install \
+# 提取新版 deploy_release.py 并安装 21 基线 + 执行隔离单元（默认 --mode SHADOW_ONLY）
+mkdir -p /tmp/xxp_deploy_runner
+tar -xzf /tmp/xxproject_release.tar.gz -C /tmp/xxp_deploy_runner deploy/xxproject_server/deploy_release.py
+sudo python3 /tmp/xxp_deploy_runner/deploy/xxproject_server/deploy_release.py install \
   --package /tmp/xxproject_release.tar.gz \
   --apply-units \
   --with-execution
 
-# 若启用 --with-execution 后需回退至无执行层的 P5 基线，必须用新版 deploy_release.py 执行回滚（禁止使用旧版脚本）：
-# 会校验 /health-fresh safe_for_deploy=true、卸载执行单元与 60-exec-control.conf、恢复 workbench 属主为 bitnami 并归档旧 public_status.json
+# 幂等校准存量案卷权限（仅限 shadow_dossiers，2750/0640 bitnami:research）
+sudo python3 /opt/xxproject/current/deploy/xxproject_server/deploy_release.py repair-dossier-perms
+
+# 校验发布树清单、文件摘要与 SHADOW_ONLY 不变量
+sudo python3 /opt/xxproject/current/deploy/xxproject_server/deploy_release.py verify
+
+# 若启用 --with-execution 后需回退至无执行层的基线，必须使用新版 deploy_release.py 执行回滚：
 sudo python3 /opt/xxproject/current/deploy/xxproject_server/deploy_release.py rollback --apply-units
 
-# 验证 8 项 OS / Confused-Deputy / 跨 UID 共享读写 / P5 只读可见性隔离门禁
+# 验证 9 项 OS / Confused-Deputy / 跨 UID 共享读写（含新写案卷跨账号可读性）门禁
 sudo bash /opt/xxproject/current/deploy/xxproject_server/systemd_units_execution/linux_security_verify.sh
 
 # 运行 SHADOW_ONLY 统一健康检查（含执行层 public_status.json + systemd + /api/workbench/execution/live）
 sudo python3 /opt/xxproject/current/tools/xxproject_server_health_v1.py --require-systemd --require-workbench-auth --require-release-manifest --require-execution --expected-exec-mode SHADOW_ONLY
 ```
 
-验收通过标志：输出 `ALL_LINUX_SECURITY_CHECKS_PASSED` 且健康自检返回 `"ok": true`，确认：
+验收通过标志：输出 `ALL_LINUX_SECURITY_CHECKS_PASSED`（9/9）且健康自检返回 `"ok": true`，确认：
 - `astra-workbench`（非 `bitnami`）运行 `astra-workbench-v20.service`，`astra-exec` 运行 `astra-execution-coordinator.service`（`mode=SHADOW_ONLY`, `writes_enabled=false`, `cockpit_mode=READ_ONLY`）；
-- `ASTRA_WORKBENCH_TOKEN` 可读 `GET /api/workbench/execution/live`（HTTP 200），但调用 `POST /api/workbench/execution/halt-entry`（及任意 `/api/workbench/execution/*` POST）均返回 `403`；
-- `bitnami` 与 `astra-workbench` 对 `/run/astra-exec/control.sock`、`exec_store.sqlite`、`exec-control.token`、`/proc/<exec_pid>/environ` 均被拒绝，同时保留对 `/var/lib/xxproject/execution/public_status.json`（`0644`）的只读可见性。
+- `ASTRA_WORKBENCH_TOKEN` 可读 `GET /api/workbench/execution/live`（HTTP 200），调用 `POST /api/workbench/execution/*` 均返回 `403`；
+- `bitnami` 与 `astra-workbench` 对 `/run/astra-exec/control.sock`、`exec_store.sqlite`、`exec-control.token`、`/proc/<exec_pid>/environ` 均被拒绝；同时 `bitnami` 新写的案卷对 `astra-workbench` 与 `astra-exec`（`research` 组）可读不可写，`/var/lib/xxproject/execution/public_status.json`（`0644`）保持只读可见。
 
-## 3. Deribit Testnet `T1–T5` 独立补验（严禁削弱入场门禁）
+---
 
-使用独立 Testnet 子账户环境变量（仅供验证脚本临时会话使用，勿常驻写主环境）：
+## 3. 现行三阶段实盘接入验收清单
 
-```bash
-export DERIBIT_TESTNET_CLIENT_ID="<testnet_subaccount_client_id>"
-export DERIBIT_TESTNET_CLIENT_SECRET="<testnet_subaccount_client_secret>"
-export DERIBIT_TESTNET_SUBACCOUNT_ID="<testnet_subaccount_id>"
-```
+### 阶段 1：自然影子轮取证（`SHADOW_ONLY`）
+- [x] 本地 136 项核心与跨模块回归、`xx-eu` Linux 9/9 安全自检、`repair-dossier-perms` 与真实 `astra-workbench`/`astra-exec` D28 读取通过（`4f97732b`）。
+- [ ] 在 `16:00 UTC` 自然牌局证实端到端影子闭环：`Accept` 落盘 → `tracking/link.json` 成功回执 → 5 分钟巡检与持有复评 → `08:00 UTC` 到期结算。
+- [ ] 解除 `/etc/signal-audit/workbench-v20.env` 的 `LLM_TIMEOUT_SEC=360` 及 `hold_timeout_s = min(timeout_s, 360.0)` 封顶。
 
-所有场景均通过真实 `ExecutionCoordinator(mode="TESTNET", env_tag="tn")`、`ExecutionStore` 与 `rebuild_episode_ledger()` 执行，完整保留 `ExecConfig` 默认准入门禁（净信用下限 `0.0008 BTC/BTC`、A-01 压力损失预算、R-09 保证金缓冲）：
+### 阶段 2：准备 Deribit 主网接入
+- [ ] **准入信号**：面向受控实盘的正式主网 API Key 与独立受控子账户通过 `root:root 0600` 安全配置通道写入目标环境，并完成只读身份、余额、SM/PM 模式、`disable_cancel_on_disconnect` 与 `0` 外部持仓/挂单核验（回执仅记配置与可用状态，不输出密钥）。
+- [ ] 补齐主网代码改造并经独立审查通过：`ALLOWED_MODES` 新增受控 `LIVE` 模式、`validate_endpoint_for_mode` 与 `_allow_private_writes` 严格绑定 `https://www.deribit.com` + 非空子账户/DCOD、健康自检 `--expected-exec-mode` 支持 `LIVE`、`execution.js` 停写推断覆盖 `LIVE`（遵守 `当前本地页面可推送` 门禁）及宿主机受控 systemd drop-in 方案。
 
-```bash
-# 公共行情 Schema 只读探测（同时验证主网护栏：传 https://www.deribit.com 必返回退出码 3）
-python3 tools/astra_exec_testnet_verify_v1.py --base-url https://test.deribit.com --public-only
+### 阶段 3：受控金额实盘最小验证（固定 `0.1 BTC`、`MAX_EPISODES = 1`）
+- [ ] **下单 (`EP -> ES`)**：实测主网保护腿先买 `IOC` -> 实证覆盖 -> 短腿再卖 `IOC`、动态 `tick_size_steps`、`C_min >= 0.0008 BTC/BTC`、`0.0060 BTC/BTC` 单腿硬封顶与不可逆 `entry_closed`。
+- [ ] **成交与止盈 (`TP`)**：实测 `USER_TRADE`/`TX_LOG` 按 `trade_id` 去重入账、封口即挂唯一 `85% GTC BUY (reduce_only=true)`（波动期静默不动），及 TP 成交后 `diff_btc == "0"`。
+- [ ] **撤单与主动退出 (`CANCEL / AI_REVOKE / EXIT_ALL`)**：实测 `cancel_by_label` 清退在途单/TP -> `RX IOC (reduce_only=true)`（遇 `10009` 现金墙保持保护腿锁定并亮红灯）-> 短腿归零后 `LX` 或 `RESIDUAL_HOLD`。
+- [ ] **仓位与重启恢复**：实测每拍 `positions/open_orders/order_history/user_trades` 一致性，及协调器重启后写锁、控制标志和 `UNKNOWN` 零重复下单恢复。
+- [ ] **到期交割对账 (`OTM` / 2026-08-01 `ITM` 两阶段交割)**：实测 `get_transaction_log` 全量过滤对账完成 OTM `expiry` 与（真实触及时）ITM `exercise/assignment -> delivery` 过渡期货净额结清，`diff_btc == "0"`。
+- [ ] **限额与三级人工停单核验**：证实启动默认 `entry_armed=0, budget_cap_btc=0, max_qty_btc=0.1`、`B_eff` 逐局扣损与子账户余额校验生效，且经 `/run/astra-exec/control.sock` 实测 `entry_armed=false`、`EXIT_ALL`、`DISABLE_WRITES` 三级停单均可立即中断并持久化。
 
-# T1：正式建仓 + 85% TP 预挂 -> 成交 -> LX -> 账本零差对账（未即时成交会保留 DB 返回 AWAITING_TP_FILL，可用 --resume-db 续跑）
-python3 tools/astra_exec_testnet_verify_v1.py --scenario t1 --work-dir /tmp/tn_p3 --wait-seconds 120
-
-# T2：建仓 -> AI_REVOKE -> 撤 TP + RX 买回短腿 -> LX -> 账本零差对账
-python3 tools/astra_exec_testnet_verify_v1.py --scenario t2 --work-dir /tmp/tn_p3 --wait-seconds 120
-
-# T3：OTM 到期两阶段结算（08:00 UTC 前开仓后若返回 AWAITING_EXPIRY，到期后使用返回的 --resume-db 续跑）
-python3 tools/astra_exec_testnet_verify_v1.py --scenario t3 --work-dir /tmp/tn_p3 --wait-seconds 60
-python3 tools/astra_exec_testnet_verify_v1.py --scenario t3 --resume-db /tmp/tn_p3/t3_exec.sqlite3 --wait-seconds 120
-
-# T4：ITM 到期两阶段交割（单腿 ITM 与双腿 ITM 分开验证；也可显式指定 --short-instrument / --long-instrument）
-python3 tools/astra_exec_testnet_verify_v1.py --scenario t4-single-itm --work-dir /tmp/tn_p3 --wait-seconds 60
-python3 tools/astra_exec_testnet_verify_v1.py --scenario t4-single-itm --resume-db /tmp/tn_p3/t4-single-itm_exec.sqlite3 --wait-seconds 120
-
-python3 tools/astra_exec_testnet_verify_v1.py --scenario t4-both-itm --work-dir /tmp/tn_p3 --wait-seconds 60
-python3 tools/astra_exec_testnet_verify_v1.py --scenario t4-both-itm --resume-db /tmp/tn_p3/t4-both-itm_exec.sqlite3 --wait-seconds 120
-
-# T5：下单 ACK 超时注入 SUBMIT_UNKNOWN -> 关闭并重启协调器通过 get_order_state_by_label 恢复（零重复下单）-> AI_REVOKE 清仓结算
-python3 tools/astra_exec_testnet_verify_v1.py --scenario t5 --work-dir /tmp/tn_p3 --wait-seconds 120
-```
-
-- [x] **M1–M4 本地代码与模拟反例全绿** -> 下一步在维护窗 (`08:35–15:50 UTC`) 执行上方 Linux `SHADOW_ONLY` 部署与 `linux_security_verify.sh`，随后持隔离 Testnet 子账户凭证运行 `T1–T5` 补验并确认全部返回 `PASSED` 且 `diff_btc == "0"`。
-
-> 若 Testnet 盘口不满足正式 `ExecConfig` 条件，工具将严格返回 `BLOCKED:no_qualified_testnet_spread`（退出码 `2`）；不得通过放宽 `ExecConfig` 阈值绕过。`t4-both-itm` 如遇近月跨度大导致保护腿超出 `0.0060` 上限，可通过 `--short-instrument / --long-instrument` 指定临近到期或合规实值价差。
+---
 
 ## 4. 主网只读检查（`SHADOW_ONLY` 限定）
 
-仅允许验证只读行情与协调器 `SHADOW_ONLY` 单步只读巡检，严禁在 P3 对主网启用 `LIVE` 或传递写模式：
+在阶段 2/3 未获正式授权前，仅允许使用公共行情运行只读巡检，严禁传递写模式或注入实盘写私钥：
 
 ```bash
-# 验证主网端点护栏阻止 Testnet/写脚本误连（预期退出码 3）
-python3 tools/astra_exec_testnet_verify_v1.py --base-url https://www.deribit.com
-
-# 只读模式单次巡检公共状态（无私钥不写订单）
+# 只读模式单次巡检主网公共状态（无私钥不写订单）
 python3 tools/astra_execution_coordinator_v1.py \
   --mode SHADOW_ONLY \
   --base-url https://www.deribit.com \
@@ -116,27 +110,32 @@ python3 tools/astra_execution_coordinator_v1.py \
   --once
 ```
 
-## 5. 与 P5 权威基线整合后的最小回归命令清单
+---
 
-后续将本分支工作成果合入最终 P5 权威基线后，必须完整运行以下最小回归集：
+## 5. 现行权威基线最小回归命令清单
 
 ```bash
 uv run --isolated --no-project --python 3.12 python -m py_compile \
   tools/astra_workbench_session_v1.py tools/astra_workbench_v20.py \
   tools/astra_exec_contracts_v1.py tools/astra_exec_store_v1.py \
   tools/astra_exec_policy_v1.py tools/astra_execution_coordinator_v1.py \
-  tools/astra_exec_testnet_verify_v1.py \
+  tools/astra_player_dossier_v1.py tools/astra_player_tracking_v13.py \
   deploy/xxproject_server/build_release.py deploy/xxproject_server/deploy_release.py
 
 node --check deploy/astra_workbench_v3/api.js
 node --check deploy/astra_workbench_v3/app.js
+node --check deploy/astra_workbench_v3/current-hand.js
+node --check deploy/astra_workbench_v3/player-audit.js
 node --check deploy/astra_workbench_v3/execution.js
 
 uv run --isolated --no-project --python 3.12 --with pytest pytest -q \
   tests/test_astra_exec_p1_kernel.py \
   tests/test_astra_exec_p2_integration.py \
+  tests/test_p5_exec_unified_joint.py \
+  tests/test_astra_player_dossier_v1.py \
+  tests/test_astra_player_tracking_v13.py \
   tests/test_astra_p5_shadow_exit.py \
   tests/test_xxproject_server_release.py \
-  tests/test_astra_workbench_v3_*.py \
+  tests/test_astra_workbench_v3_player_audit.py \
   tests/test_astra_unsuitable_wording.py
 ```

@@ -10,7 +10,7 @@
 
 ## 信息层级
 
-1. 头行：阶段印章 · 运行模式（实盘真实资金 / 测试网 / 影子 / 演练 / 模拟）· 入场启用（有字段才显示）· 可用资金与维持缓冲 · 风险预算（影子模式全零时省略）· 事实时效。
+1. 头行：阶段印章 · 运行模式（实盘真实资金 / 影子 / 演练 / 模拟）· 入场启用（有字段才显示）· 可用资金与维持缓冲 · 风险预算（影子模式全零时省略）· 事实时效。
 2. 告警：只在真实风险未解除时出现。包括：停写需接管、订单结果未知、裸空、现金不足（10009，且在 `revoke.cash_wall_10009 === false` 时自动消警）、复审不可用、未归因仓位、状态过期或中断、未挂止盈、退出时缺有效报价、退出限价低于价格带（`EXIT_PRICE_BELOW_EXCHANGE_MIN_BAND`）。
 3. 对局四行，沿用本期保单的 `drow` 读法：
    - **AI 牌手**：Accept 时间、最近复核，或 `→ REVOKE`。
@@ -27,7 +27,7 @@
   - OTM 到期且后端已置 `inventory_cleared=true, cashflow_settled=false` 时，仍归入 `expired`（`已到期 · 待交割落账`）；到期超过 2 小时仍未落账升级为 `已到期 · 交割久未落账`（`warn`）。
   - ITM 到期产生 Stage-2 交割期货（`STAGE2_DELIVERY_FUTURE_PENDING` 或 `ledger.two_stage_settlement.has_itm && inventory_cleared !== true`）时，即使期权腿显示 `0 / 0`，仍判为 `expired_stage2`（`已到期 · 交割期货待结算`，超 2 小时升级为 `已到期 · 交割期货未结且超时`，`warn`），严禁标为“两腿已清”或“仓位已归零”。
 - **时效与空闲 45 秒窗口**：以 Workbench 重算的 `stale`、`status_age_ms`、`stale_after_ms` 为准；空闲态推荐阈值 `stale_after_ms=45000`（如 25 秒内保持新鲜，超过 45 秒如 50 秒标为“执行状态过期”），且空闲态不计入 `facts_age_ms`。页面本地只累加“距本次读取过去多久”，超过阈值 30 秒仍未重读才自行判为过期，避免轮询间隙误报。
-- **停写接管**：优先采用 producer 的 `manual_takeover_required`；只有 `TESTNET` 下才由 `writes_enabled=false` 加上未结风险推断接管。
+- **停写接管**：优先采用 producer 的 `manual_takeover_required`；实盘模式（`LIVE` / `MAINNET`）下若未显式给出该字段，才由 `writes_enabled=false` 叠加未结风险推断接管（对应前端分支随主网 `LIVE` 适配一并收齐，见 [LIVE_EXECUTION_ACCESS_PLAN.md](LIVE_EXECUTION_ACCESS_PLAN.md)）。
 
 ## 数据接口依赖
 
