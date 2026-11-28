@@ -3878,3 +3878,58 @@ def test_live_mainnet_spm_single_trial_dynamic_mreq_full_cycle_and_guards(tmp_pa
         finally:
             st_p.close()
 
+
+def test_tx_from_deribit_handles_string_dict_and_none_info() -> None:
+    str_row = {
+        "id": 1117464377,
+        "type": "trade",
+        "instrument_name": "BTC-29NOV26-59000-P",
+        "timestamp": 1795888780067,
+        "amount": 0.1,
+        "price": 0.0031,
+        "cashflow": 0.00031,
+        "change": 0.00028,
+        "commission": 0.00003,
+        "currency": "BTC",
+        "trade_id": "477972077",
+        "order_id": "184914253219",
+        "info": "Source: 'api:test_main'",
+    }
+    tx_str = coord_mod._tx_from_deribit(str_row)
+    assert tx_str.id == 1117464377
+    assert tx_str.type == "trade"
+    assert tx_str.instrument_name == "BTC-29NOV26-59000-P"
+    assert tx_str.timestamp_ms == 1795888780067
+    assert tx_str.amount == D("0.1")
+    assert tx_str.price == D("0.0031")
+    assert tx_str.cashflow == D("0.00031")
+    assert tx_str.change == D("0.00028")
+    assert tx_str.commission == D("0.00003")
+    assert tx_str.trade_id == "477972077"
+    assert tx_str.order_id == "184914253219"
+    assert tx_str.settlement_price is None
+    assert tx_str.info == {}
+
+    dict_row = {
+        "id": 1117464378,
+        "type": "delivery",
+        "instrument_name": "BTC-29NOV26-59000-P",
+        "timestamp": 1795939200000,
+        "amount": 0.1,
+        "price": None,
+        "cashflow": 0,
+        "change": 0,
+        "commission": 0,
+        "currency": "BTC",
+        "info": {"settlement_price": "60123.45", "note": "expiry"},
+    }
+    tx_dict = coord_mod._tx_from_deribit(dict_row)
+    assert tx_dict.settlement_price == D("60123.45")
+    assert tx_dict.info["note"] == "expiry"
+
+    none_row = {**str_row, "id": 1117464379, "info": None}
+    tx_none = coord_mod._tx_from_deribit(none_row)
+    assert tx_none.settlement_price is None
+    assert tx_none.info == {}
+
+

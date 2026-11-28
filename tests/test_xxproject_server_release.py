@@ -893,3 +893,151 @@ def test_closure_ops_b4_preexec_rollback_rel_w5_and_health_bounds(tmp_path: Path
     assert exec_sentinel.read_text(encoding="utf-8") == "keep"
     assert deployer.main(["repair-dossier-perms", "--root-prefix", str(tmp_path), "--group", "bitnami"]) == 0
 
+
+def test_active_episode_hotfix_gate_fail_closed_and_receipt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import sys
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    builder = _load_script("xxproject_build_hf", BUILD_SCRIPT)
+    deployer = _load_script("xxproject_deploy_hf", DEPLOY_SCRIPT)
+    pkg = tmp_path / "pkg_hf.tar.gz"
+    builder.build_release(ROOT, pkg, source_commit="3333333333333333333333333333333333333333", allow_dirty=True)
+
+    prefix = tmp_path / "host_hf"
+    exec_dir = prefix / "var" / "lib" / "xxproject" / "execution"
+    exec_dir.mkdir(parents=True, exist_ok=True)
+    tok_path = prefix / "etc" / "signal-audit" / "exec-control.token"
+    tok_path.parent.mkdir(parents=True, exist_ok=True)
+    tok_path.write_text("hf-token", encoding="utf-8")
+    (exec_dir / "public_status.json").write_text('{"mode":"LIVE"}', encoding="utf-8")
+
+    sys.path.insert(0, str(ROOT / "tools"))
+    import astra_exec_contracts_v1 as ec
+    import astra_exec_store_v1 as exec_store_mod
+
+    db_path = exec_dir / "exec_store.sqlite"
+    st = exec_store_mod.ExecutionStore(db_path)
+    st.create_episode(
+        ec.EpisodeState(
+            episode_id="ep_hf_1",
+            env="live",
+            subaccount_id="280095",
+            dossier_id="Deribit_BTC_20261129T080000Z",
+            hand_id="hand_hf_1",
+            p5_episode_id="episode_hf_1",
+            side="put",
+            short_instrument="BTC-29NOV26-59000-P",
+            long_instrument="BTC-29NOV26-57000-P",
+            short_strike_usd=ec.D("59000"),
+            long_strike_usd=ec.D("57000"),
+            expiry_ms=1_795_939_200_000,
+            contract_hash="abc",
+            phase=ec.LifecyclePhase.ENTRY,
+            created_at_ms=1_795_888_779_722,
+        )
+    )
+    st.close()
+
+    health_payload: dict[str, object] = {
+        "ok": True,
+        "mode": "LIVE",
+        "safe_for_deploy": False,
+        "open_positions_count": 1,
+        "open_orders_count": 0,
+        "active_or_unknown_commands_count": 0,
+        "active_unsettled_episode": "ep_hf_1",
+    }
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            raw = json.dumps(health_payload).encode("utf-8")
+            self.send_response(200 if health_payload.get("ok") else 503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    srv = HTTPServer(("127.0.0.1", 0), _Handler)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    url = f"http://127.0.0.1:{srv.server_address[1]}"
+    try:
+        # 1) Default (allow_active_episode_hotfix=False) MUST fail closed
+        with pytest.raises(RuntimeError, match="active_live_exposure_or_commands"):
+            deployer.cmd_install(
+                pkg, prefix, apply_units=False, no_systemd=True, allow_dirty_release=True,
+                exec_control_url=url, exec_control_token_file=tok_path,
+            )
+
+        # 2) Non-int/missing open_orders_count or non-zero open_orders_count MUST still fail even with flag=True
+        health_payload["open_orders_count"] = None
+        with pytest.raises(RuntimeError, match="active_live_exposure_or_commands"):
+            deployer.cmd_install(
+                pkg, prefix, apply_units=False, no_systemd=True, allow_dirty_release=True,
+                allow_active_episode_hotfix=True, exec_control_url=url, exec_control_token_file=tok_path,
+            )
+        health_payload["open_orders_count"] = 1
+        with pytest.raises(RuntimeError, match="active_live_exposure_or_commands"):
+            deployer.cmd_install(
+                pkg, prefix, apply_units=False, no_systemd=True, allow_dirty_release=True,
+                allow_active_episode_hotfix=True, exec_control_url=url, exec_control_token_file=tok_path,
+            )
+
+        # 3) SQLite in-flight command (SUBMIT_UNKNOWN / OPEN) MUST fail even if health_payload looks clean
+        health_payload["open_orders_count"] = 0
+        st2 = exec_store_mod.ExecutionStore(db_path)
+        st2.create_command_intent(
+            ec.ExecCommand(
+                cmd_id="ep_hf_1:cmd_0001_TP",
+                episode_id="ep_hf_1",
+                purpose="TP",
+                label="ax1:live:ep_hf_1:TP:0001",
+                instrument_name="BTC-29NOV26-59000-P",
+                direction="buy",
+                amount=ec.D("0.1"),
+                limit_price=ec.D("0.0005"),
+                time_in_force="GTC",
+                reduce_only=True,
+                post_only=True,
+                reject_post_only=False,
+                valid_until_ms=1_795_889_000_000,
+                created_at_ms=1_795_888_800_000,
+                status=ec.CommandStatus.SUBMIT_UNKNOWN,
+            ),
+            now_ms=1_795_888_800_000,
+        )
+        st2.close()
+        with pytest.raises(RuntimeError, match="active_live_exposure_or_commands"):
+            deployer.cmd_install(
+                pkg, prefix, apply_units=False, no_systemd=True, allow_dirty_release=True,
+                allow_active_episode_hotfix=True, exec_control_url=url, exec_control_token_file=tok_path,
+            )
+
+        # 4) Once SQLite has 0 in-flight commands and counts are 0, allow_active_episode_hotfix=True succeeds and records override
+        st3 = exec_store_mod.ExecutionStore(db_path)
+        st3.update_command_state("ep_hf_1:cmd_0001_TP", status=ec.CommandStatus.EXPIRED_UNFILLED, now_ms=1_795_888_805_000)
+        st3.close()
+        monkeypatch.setattr(deployer, "_validate_execution_os_isolation", lambda _p: None)
+        monkeypatch.setattr(deployer, "_migrate_exec_shared_permissions", lambda _p: None)
+        rc_cli = deployer.main([
+            "install",
+            "--root-prefix", str(prefix),
+            "--package", str(pkg),
+            "--no-systemd",
+            "--allow-dirty-release",
+            "--allow-active-episode-hotfix",
+            "--exec-control-url", url,
+            "--exec-control-token-file", str(tok_path),
+        ])
+        assert rc_cli == 0
+        ledger = [json.loads(ln) for ln in (prefix / "opt" / "xxproject" / "deployments.jsonl").read_text(encoding="utf-8").splitlines() if ln.strip()]
+        assert ledger[-1].get("active_episode_hotfix_override") is True
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+

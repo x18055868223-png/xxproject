@@ -273,6 +273,8 @@ def _trade_from_deribit(raw: Mapping[str, Any]) -> VenueTrade:
 
 
 def _tx_from_deribit(raw: Mapping[str, Any]) -> TxLogEntry:
+    raw_info = raw.get("info")
+    info_map = dict(raw_info) if isinstance(raw_info, Mapping) else {}
     return TxLogEntry(
         id=int(raw["id"]),
         type=str(raw["type"]).lower(),
@@ -286,8 +288,8 @@ def _tx_from_deribit(raw: Mapping[str, Any]) -> TxLogEntry:
         currency=str(raw.get("currency") or "BTC"),
         trade_id=raw.get("trade_id"),
         order_id=raw.get("order_id"),
-        settlement_price=opt_dec(raw.get("settlement_price") or (raw.get("info") or {}).get("settlement_price")),
-        info=dict(raw.get("info") or {}) if isinstance(raw.get("info"), Mapping) else {},
+        settlement_price=opt_dec(raw.get("settlement_price") or info_map.get("settlement_price")),
+        info=info_map,
     )
 
 

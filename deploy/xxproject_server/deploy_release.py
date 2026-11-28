@@ -1054,12 +1054,34 @@ def _is_clean_settled_post_rollback_store(db_path: Path) -> bool:
         conn.close()
 
 
+def _has_no_in_flight_commands(db_path: Path) -> bool:
+    """True only when SQLite proves 0 commands in UNKNOWN/OPEN states."""
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=2.0)
+    except Exception:
+        return False
+    try:
+        open_cmd = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM commands WHERE status IN ('PREPARED_UNKNOWN','SUBMIT_UNKNOWN','OPEN','CANCEL_UNKNOWN')"
+            ).fetchone()[0]
+        )
+        return open_cmd == 0
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
 def _check_execution_deploy_safety(
     prefix: Path,
     *,
     exec_control_url: str | None = None,
     exec_control_token_file: Path | None = None,
     no_systemd: bool = False,
+    allow_active_episode_hotfix: bool = False,
 ) -> dict[str, Any] | None:
     """Fail-closed pre-deploy / pre-rollback safety check against live execution coordinator /health-fresh."""
     sock = Path("/run/astra-exec/control.sock") if _is_system_root(prefix) else (prefix / "run" / "astra-exec" / "control.sock")
@@ -1092,6 +1114,16 @@ def _check_execution_deploy_safety(
         or int(data.get("active_or_unknown_commands_count") or 0) > 0
         or bool(data.get("active_unsettled_episode"))
     ):
+        if (
+            allow_active_episode_hotfix
+            and type(data.get("active_or_unknown_commands_count")) is int
+            and data["active_or_unknown_commands_count"] == 0
+            and type(data.get("open_orders_count")) is int
+            and data["open_orders_count"] == 0
+            and db_path.is_file()
+            and _has_no_in_flight_commands(db_path)
+        ):
+            return {**data, "active_episode_hotfix_override": True}
         raise RuntimeError(f"UNSAFE_EXECUTION_STATE: active_live_exposure_or_commands payload={data}")
     return data
 
@@ -1122,6 +1154,7 @@ def cmd_install(
     min_free_bytes: int = 512 * 1024 * 1024,
     allow_window_override: bool = False,
     allow_dirty_release: bool = False,
+    allow_active_episode_hotfix: bool = False,
     strict_clean: bool | None = None,
     now_ms: int | None = None,
     exec_control_url: str | None = None,
@@ -1133,11 +1166,12 @@ def cmd_install(
     _validate_systemd_prereqs(prefix, apply_units=apply_units, no_systemd=no_systemd, with_execution=with_execution)
     app_root = _app_root(prefix)
     with _deploy_lock(app_root, action="install") as lock_path:
-        _check_execution_deploy_safety(
+        exec_safety = _check_execution_deploy_safety(
             prefix,
             exec_control_url=exec_control_url,
             exec_control_token_file=exec_control_token_file,
             no_systemd=no_systemd,
+            allow_active_episode_hotfix=allow_active_episode_hotfix,
         )
         preflight = cmd_preflight(pkg, prefix, min_free_bytes=min_free_bytes)
         _validate_clean_release_manifest(
@@ -1227,6 +1261,8 @@ def cmd_install(
             "pruned_releases": pruned,
             "ok": True,
         }
+        if isinstance(exec_safety, dict) and exec_safety.get("active_episode_hotfix_override") is True:
+            receipt["active_episode_hotfix_override"] = True
         _append_receipt(app_root, receipt)
         return receipt
 
@@ -1380,6 +1416,7 @@ def main(argv: list[str] | None = None) -> int:
     p_inst.add_argument("--min-free-bytes", type=int, default=512 * 1024 * 1024)
     p_inst.add_argument("--allow-window-override", action="store_true")
     p_inst.add_argument("--allow-dirty-release", action="store_true")
+    p_inst.add_argument("--allow-active-episode-hotfix", action="store_true")
     p_inst.add_argument("--exec-control-url", default=None)
     p_inst.add_argument("--exec-control-token-file", type=Path, default=None)
 
@@ -1422,6 +1459,7 @@ def main(argv: list[str] | None = None) -> int:
             min_free_bytes=args.min_free_bytes,
             allow_window_override=args.allow_window_override,
             allow_dirty_release=args.allow_dirty_release,
+            allow_active_episode_hotfix=args.allow_active_episode_hotfix,
             exec_control_url=args.exec_control_url,
             exec_control_token_file=args.exec_control_token_file,
         )
