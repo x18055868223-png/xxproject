@@ -2,6 +2,12 @@
 
 This repository contains the neutral-loop integration workspace, deployable FMZ single-file artifacts, and signal audit archive scaffolding. Prefer repository-relative paths, preserve the current dry-run safety defaults, and keep signal observability changes separate from trading logic unless the user explicitly asks otherwise.
 
+## Mandatory Astra model style
+
+- 本项目一切任务（包括新会话、换模型与使用其他工作树 `.worktrees/*`），开始前必须先读取并遵循权威风格文件 [ASTRA_MODEL_STYLE.md](ASTRA_MODEL_STYLE.md)（v1.3），交付前完成其中三句自检（删掉这道限制会出什么具体错误？这一处失败会不会抹掉前面已经有效的结果？使用者现在能走到哪一步？）；不等待用户再次提醒。
+- 该文件是项目强制模型风格约定：工程可用四原则、决策可用性优先、同源单入口与局部故障就地接续，优先于默认的完整性、可审计性和防御性倾向。它不改变事实准确性、明确权限或既有发布约束；用户最新明确要求优先。
+- 各工作树使用同名文件与 `.agents/rules/core_style.md`；修改这一共同约定时，同步用户可见根目录与当前工作树，避免继续沿用旧风格。
+
 ## Repository authority
 
 - `https://github.com/x18055868223-png/xxproject` (`xxproject`) is the primary project repository and the default target for project baseline, release, tag, and server-deployment decisions.
