@@ -850,12 +850,12 @@ def test_model_path_real_sse_truncation_parse_retry_crash_recovery_and_budget_gu
         assert orig_inc["partial_response"]["bytes_received"] > 0
         assert "SECRET_COT_STREAM" not in json.dumps(orig_inc, ensure_ascii=False)
 
-    # 1b) Strict candidate Accept contract precheck violations (`invalidation="bad"`, `check_interval_ms=90000`, missing `condition_plan`, bad J1 excerpt) -> CONTRACT_VALIDATION_FAILED, ZERO retry & ZERO standby failover!
+    # 1b) Strict candidate Accept structural precheck violations (`invalidation="bad"`, `check_interval_ms=90000`, missing `condition_plan`, missing `accepted_conditions`) -> CONTRACT_VALIDATION_FAILED, ZERO retry & ZERO standby failover!
     for bad_label, mutator in (
         ("missing_plan", lambda ann: ann.pop("condition_plan", None)),
         ("bad_invalidation", lambda ann: ann["condition_plan"].__setitem__("invalidation", "bad_rule")),
         ("non_minute_interval", lambda ann: ann["condition_plan"].__setitem__("check_interval_ms", 90_000)),
-        ("paraphrased_j1", lambda ann: ann.__setitem__("put", "非原文摘录改写句。")),
+        ("omitted_t0_outside", lambda ann: ann["condition_plan"].pop("require_outside_at_t0", None)),
     ):
         h_bad_cv = d.expect(expiry_ms, "AD_HOC", reference=f"sse-cv-{bad_label}")
         d.deal(h_bad_cv, base_source, input_profile="p0_strict@1")
@@ -884,6 +884,27 @@ def test_model_path_real_sse_truncation_parse_retry_crash_recovery_and_budget_gu
         r_cv2 = tracking._deal_hand(d, h_bad_cv, None, cfg_bad_cv, prompt_version=review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION, input_profile="p0_strict@1")
         assert r_cv2 == {"hand_id": h_bad_cv.name, "status": "AUTO_ATTEMPTED", "last_status": "PARSE_FAILED"}
         assert seen_cv_models == ["deepseek-reasoner"]
+
+    # Non-verbatim `put` JSON pointer alongside unique valid `Put` prose resolves deterministically on Attempt 1
+    h_para = d.expect(expiry_ms, "AD_HOC", reference="sse-cv-paraphrased-put-resolved")
+    d.deal(h_para, base_source, input_profile="p0_strict@1")
+    pub_p, json_p = accept_put.split("<ANNOTATION_JSON>")
+    ann_p = json.loads(json_p.split("</ANNOTATION_JSON>")[0].strip())
+    ann_p["put"] = "非原文摘录改写句。"
+    para_text = pub_p + "<ANNOTATION_JSON>\n" + json.dumps(ann_p, ensure_ascii=False) + "\n</ANNOTATION_JSON>"
+    r_para = tracking._deal_hand(
+        d,
+        h_para,
+        None,
+        tracking._llm_settings({
+            "api_key": "k",
+            "model": "deepseek-reasoner",
+            "transport": lambda *_a, **_kw: {"choices": [{"finish_reason": "stop", "message": {"content": para_text}}]},
+        }),
+        prompt_version=review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+        input_profile="p0_strict@1",
+    )
+    assert r_para["status"] == "VALID" and r_para["decision"] == "Accept"
 
     # 2) Real SSE `finish_reason="length"` truncation (hand_d62e pattern) -> PARSE_FAILED -> next-tick bounded retry -> VALID + SHADOW_LOCK_CREATED
     h_len = d.expect(expiry_ms, "AD_HOC", reference="sse-length-retry")

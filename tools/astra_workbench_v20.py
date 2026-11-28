@@ -5087,9 +5087,15 @@ class AstraWorkbench:
                             self.refresh_expiry_gamma(now_ms=self.clock_ms(), force=force_eg)
                         except Exception:
                             pass
-                    self.refresh(now_ms=self.clock_ms(), record_daily=False)
-                    refreshed = True
-                    state = _evaluate(self.clock_ms())
+                        refreshed = True
+                        state = _evaluate(self.clock_ms())
+                    if (
+                        state["readiness_status"] not in {"SOURCE_READY", "MARKET_SINGLE_SIDE_ONLY"}
+                        and state["deribit_cooldown_remaining_ms"] == 0
+                    ):
+                        self.refresh(now_ms=self.clock_ms(), record_daily=False)
+                        refreshed = True
+                        state = _evaluate(self.clock_ms())
 
         quote_hold_final = int(getattr(unsuitable, "QUOTE_HOLD_MS", 180_000))
         cases_out: dict[str, Any] | None = None
@@ -8105,8 +8111,14 @@ def make_handler(workbench: AstraWorkbench):
                 if path == player_tracking.AUDIT_PATH + "/current":
                     self._shadow_json({"hand": player_tracking.current_scheduled(root, workbench.clock_ms())})
                     return
+                def _safe_tracker_ids() -> dict[str, Any]:
+                    try:
+                        return {e["episode_id"]: e["status"] for e in workbench.locked_candidates.list() if not e.get("index_error")}
+                    except locked_store.LockedCandidateError:
+                        return {}
+
                 if path == player_tracking.AUDIT_PATH:
-                    ids = {e["episode_id"]: e["status"] for e in workbench.locked_candidates.list() if not e.get("index_error")}
+                    ids = _safe_tracker_ids()
                     now = workbench.clock_ms()
                     data = player_tracking.audit_index(root, now, ids)
                     self._shadow_json(data)
@@ -8115,7 +8127,7 @@ def make_handler(workbench: AstraWorkbench):
                 if len(parts) == 2:
                     dossier_id, hand_id = parts
                     hand = player_tracking.hand_path(root, dossier_id, hand_id)
-                    ids = {e["episode_id"]: e["status"] for e in workbench.locked_candidates.list() if not e.get("index_error")}
+                    ids = _safe_tracker_ids()
                     now = workbench.clock_ms()
                     data = player_tracking.audit_record(hand, now, ids, detail=True)
                     self._shadow_json(data)

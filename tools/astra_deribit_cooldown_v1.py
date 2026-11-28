@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 ENV_KEY = "ASTRA_DERIBIT_COOLDOWN_FILE"
+READONLY_ENV_KEY = "ASTRA_DERIBIT_COOLDOWN_READONLY_FILES"
 SCHEMA = "astra_deribit_cooldown@1.0.0"
 MAX_COOLDOWN_MS = 300_000
 
@@ -31,14 +32,22 @@ def resolve_path(path: str | Path | None = None) -> Path | None:
     return Path(text) if text else None
 
 
-def read_cooldown(
-    path: str | Path | None = None, *, now_ms: int | None = None
-) -> dict[str, Any] | None:
-    """Return active cooldown metadata if unexpired, else ``None``."""
-    target = resolve_path(path)
+def resolve_readonly_paths() -> list[Path]:
+    """Resolve optional read-only cooldown paths from ``ASTRA_DERIBIT_COOLDOWN_READONLY_FILES``."""
+    raw = (os.environ.get(READONLY_ENV_KEY) or "").strip()
+    if not raw:
+        return []
+    out: list[Path] = []
+    for part in raw.split(os.pathsep):
+        cleaned = part.strip()
+        if cleaned:
+            out.append(Path(cleaned))
+    return out
+
+
+def _read_single_cooldown(target: Path | None, *, now: int) -> dict[str, Any] | None:
     if target is None or not target.is_file():
         return None
-    now = _now_ms(now_ms)
     try:
         raw = target.read_text(encoding="utf-8")
         data = json.loads(raw)
@@ -59,6 +68,28 @@ def read_cooldown(
         "reason": str(data.get("reason") or "DERIBIT_HTTP_429"),
         "updated_at_ms": data.get("updated_at_ms"),
     }
+
+
+def read_cooldown(
+    path: str | Path | None = None, *, now_ms: int | None = None
+) -> dict[str, Any] | None:
+    """Return active cooldown metadata if unexpired, else ``None``."""
+    now = _now_ms(now_ms)
+    if path is not None:
+        return _read_single_cooldown(resolve_path(path), now=now)
+    candidates: list[Path] = []
+    primary = resolve_path()
+    if primary is not None:
+        candidates.append(primary)
+    for ro_path in resolve_readonly_paths():
+        if ro_path not in candidates:
+            candidates.append(ro_path)
+    best: dict[str, Any] | None = None
+    for cand in candidates:
+        item = _read_single_cooldown(cand, now=now)
+        if item is not None and (best is None or item["cooldown_until_ms"] > best["cooldown_until_ms"]):
+            best = item
+    return best
 
 
 def remaining_ms(path: str | Path | None = None, *, now_ms: int | None = None) -> int:

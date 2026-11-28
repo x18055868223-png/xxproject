@@ -1068,147 +1068,104 @@ def _strip_section_label_prefix(norm_text: str) -> str:
     ).strip()
 
 
-def _expand_unambiguous_labeled_excerpt(
+def _collect_distinct_sections(
+    section_occurrences: Mapping[str, Sequence[Mapping[str, str]]],
+    section_key: str,
+) -> list[Mapping[str, str]]:
+    distinct: list[Mapping[str, str]] = []
+    seen: set[str] = set()
+    for occ in section_occurrences.get(section_key) or ():
+        nb = _norm_review_excerpt(occ.get("body") or "") or _norm_review_excerpt(occ.get("raw_full") or "")
+        if nb and nb not in seen:
+            seen.add(nb)
+            distinct.append(occ)
+    return distinct
+
+
+def _inspect_excerpt_compat(
+    excerpt: Any,
+    text: str,
+    *,
+    expected_section: str | None = None,
+    sections: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    if sections is None:
+        return dossier.inspect_excerpt_integrity(excerpt, text, expected_section=expected_section)
+    try:
+        return dossier.inspect_excerpt_integrity(
+            excerpt, text, expected_section=expected_section, sections=sections
+        )
+    except TypeError:
+        return dossier.inspect_excerpt_integrity(excerpt, text, expected_section=expected_section)
+
+
+def _resolve_excerpt_from_prose(
     raw_val: Any,
     public_text: str,
     *,
     expected_section: str,
-    sections: Mapping[str, Mapping[str, str]],
-) -> tuple[str, dict[str, Any] | None]:
-    """Losslessly expand a verbatim sentence/clause-boundary prefix inside an unambiguous labeled section.
+    section_occurrences: Mapping[str, Sequence[Mapping[str, str]]],
+    contract: Mapping[str, Any] | None = None,
+    invalidation: str | None = None,
+    expected_interval_ms: int | None = None,
+    require_non_conflicting_m: bool = False,
+    allow_keep_on_section_conflict: bool = False,
+) -> tuple[Any, dict[str, Any] | None, str | None]:
+    """Resolve an excerpt deterministically from one unambiguous prose section when valid.
 
-    Preserves `public_text` (`response.raw`) byte-for-byte, never alters polarity/side/strikes,
-    and refuses mid-word/mid-phrase truncations (e.g. `truncate_comparison`), wrong-section pointers,
-    or non-verbatim strings.
+    Never chooses arbitrarily between conflicting repeated sections and never silently
+    overrides an actively conflicting M statement with a different section's M prose.
     """
-    if not isinstance(raw_val, str) or not raw_val.strip():
-        return raw_val, None
-    ex_s = raw_val.strip()
-    if not dossier.excerpt_in_text(ex_s, public_text):
-        return raw_val, None
-    chk = dossier.inspect_excerpt_integrity(ex_s, public_text, expected_section=expected_section)
-    if chk.get("complete") is True or chk.get("matched") is not True or chk.get("section") != expected_section:
-        return raw_val, None
-    sec = sections.get(expected_section)
-    if not isinstance(sec, Mapping):
-        return raw_val, None
-    norm_ex = _norm_review_excerpt(ex_s)
-    if len(norm_ex) < 20:
-        return raw_val, None
-    target_raw = str(sec.get("raw_full") or sec.get("full") or "")
-    if not target_raw or target_raw not in public_text:
-        return raw_val, None
-    idx = target_raw.find(ex_s)
-    if idx < 0:
-        return raw_val, None
-    if idx > 0 and not re.fullmatch(r"[\s\-*•#>]*[^：:\n]{1,32}[：:]\s*", target_raw[:idx]):
-        return raw_val, None
-    rest = target_raw[idx + len(ex_s):]
-    if not rest.strip():
-        return raw_val, None
-    ends_sentence = bool(dossier._TERMINAL_END_RE.search(ex_s)) or ex_s.endswith(("；", ";"))
-    stops_at_clause_delim = rest[0] in {"，", ",", "；", ";", "。", "！", "？"}
-    has_trailing_connector = bool(re.search(r"[,，、:：(\[（\-—–]$", ex_s))
-    balanced_delims = (
-        ex_s.count("(") == ex_s.count(")")
-        and ex_s.count("（") == ex_s.count("）")
-        and ex_s.count("[") == ex_s.count("]")
-        and ex_s.count("【") == ex_s.count("】")
-        and ex_s.count("“") == ex_s.count("”")
-        and ex_s.count('"') % 2 == 0
-    )
-    if not ((ends_sentence or stops_at_clause_delim) and not has_trailing_connector and balanced_delims):
-        return raw_val, None
-    expanded = target_raw[idx:].strip()
-    if expanded not in public_text:
-        return raw_val, None
-    chk_after = dossier.inspect_excerpt_integrity(expanded, public_text, expected_section=expected_section)
-    if chk_after.get("complete") is not True or chk_after.get("section") not in (None, expected_section):
-        return raw_val, None
-    return expanded, {
-        "kind": "j1_labeled_section_clause_prefix_expanded",
+    ex_s = raw_val.strip() if isinstance(raw_val, str) and raw_val.strip() else ""
+    in_text = bool(ex_s) and dossier.excerpt_in_text(ex_s, public_text)
+    distinct = _collect_distinct_sections(section_occurrences, expected_section)
+    if len(distinct) > 1:
+        if allow_keep_on_section_conflict and in_text:
+            return ex_s, {"kind": "conflicting_prose_sections", "field": expected_section}, None
+        return raw_val, None, "conflicting_prose_sections"
+    if not distinct:
+        return (ex_s if in_text else raw_val), None, None
+
+    sec_obj = distinct[0]
+    sec_full = str(sec_obj.get("raw_full") or sec_obj.get("full") or "")
+    norm_sec_full = _norm_review_excerpt(sec_full)
+    norm_sec_body = _norm_review_excerpt(sec_obj.get("body") or "")
+    if not sec_full or sec_full not in public_text:
+        return (ex_s if in_text else raw_val), None, None
+
+    norm_ex = _norm_review_excerpt(ex_s) if ex_s else ""
+    if in_text and norm_ex in (norm_sec_full, norm_sec_body):
+        return ex_s, None, None
+
+    if require_non_conflicting_m and ex_s and contract is not None and not (in_text and norm_ex in norm_sec_full):
+        other_m = dossier.condition.validate_confirmation_prose(
+            ex_s,
+            contract,
+            expected_invalidation=invalidation,
+            expected_interval_ms=expected_interval_ms,
+            require_positive_m=False,
+        )
+        if not other_m.get("valid"):
+            return raw_val, None, "conflicting_confirmation_excerpts"
+
+    if not ex_s:
+        reason = "derived_from_prose"
+    elif not in_text:
+        reason = "non_verbatim_pointer_replaced"
+    elif norm_ex in norm_sec_full:
+        reason = "partial_excerpt_expanded"
+    else:
+        reason = "wrong_section_or_duplicate_pointer"
+    return sec_full, {
+        "kind": "excerpt_resolved_from_prose",
         "field": expected_section,
-        "original_status": chk.get("status"),
-        "original_coverage_ratio": chk.get("coverage_ratio"),
-    }
+        "reason": reason,
+    }, None
 
 
 def is_recoverable_citation_contract_failure(contract_validation: Any) -> bool:
-    """Return True iff `CONTRACT_FAILED` is solely a J1 citation-pointer / duplicate / span flaw on verbatim text."""
-    if not isinstance(contract_validation, Mapping):
-        return False
-    if contract_validation.get("status") != "CONTRACT_FAILED":
-        return False
-    if contract_validation.get("audit_scope") not in {"NON_ACCEPT_J1_ONLY", "ACCEPT_FULL_CONTRACT"}:
-        return False
-    explicit = contract_validation.get("recoverable_citation_only")
-    if isinstance(explicit, bool):
-        return explicit
-    layer1 = contract_validation.get("layer1_deterministic")
-    if not isinstance(layer1, Mapping):
-        return False
-    blocking = [str(e) for e in (layer1.get("blocking_errors") or ()) if e]
-    if not blocking:
-        return False
-    excerpt_checks = layer1.get("excerpt_checks") if isinstance(layer1.get("excerpt_checks"), Mapping) else {}
-    j1_prefixes = ("j1_excerpt_incomplete:", "j1_excerpt_wrong_section:", "j1_excerpt_duplicate_section:")
-    if not any(err.startswith(j1_prefixes) for err in blocking):
-        return False
-    for err in blocking:
-        if not err.startswith(j1_prefixes):
-            return False
-        parts = err.split(":")
-        field_name = parts[1] if len(parts) >= 2 else ""
-        chk = excerpt_checks.get(field_name) if isinstance(excerpt_checks, Mapping) else None
-        if isinstance(chk, Mapping) and chk.get("status") in {"NOT_IN_TEXT", "EMPTY"}:
-            return False
-    return True
-
-
-def _compute_recoverable_citation_only(
-    *,
-    raw_text: str,
-    blocking_errors: Sequence[str],
-    excerpt_checks: Mapping[str, Any],
-    contract: Mapping[str, Any] | None,
-    m1_kwargs: Mapping[str, Any] | None,
-) -> bool:
-    if not blocking_errors:
-        return False
-    j1_prefixes = ("j1_excerpt_incomplete:", "j1_excerpt_wrong_section:", "j1_excerpt_duplicate_section:")
-    if not any(err.startswith(j1_prefixes) for err in blocking_errors):
-        return False
-    conf_pointer_err = any(
-        err.startswith((
-            "j1_excerpt_wrong_section:condition_plan.confirmation_excerpt:",
-            "j1_excerpt_duplicate_section:condition_plan.confirmation_excerpt",
-        ))
-        or err == "j1_excerpt_incomplete:condition_plan.confirmation_excerpt:WRONG_SECTION"
-        for err in blocking_errors
-    )
-    sections_cache: Mapping[str, Any] | None = None
-    for err in blocking_errors:
-        if err.startswith(j1_prefixes):
-            parts = err.split(":")
-            field_name = parts[1] if len(parts) >= 2 else ""
-            chk = excerpt_checks.get(field_name) if isinstance(excerpt_checks, Mapping) else None
-            if isinstance(chk, Mapping) and chk.get("status") in {"NOT_IN_TEXT", "EMPTY"}:
-                return False
-            continue
-        if conf_pointer_err and err.startswith("m1_contract_violation:") and contract is not None and m1_kwargs is not None:
-            if sections_cache is None:
-                sections_cache = dossier.extract_labeled_sections(raw_text)
-            conf_sec = sections_cache.get("confirmation_excerpt") if isinstance(sections_cache, Mapping) else None
-            if not isinstance(conf_sec, Mapping):
-                return False
-            cand_m_text = str(conf_sec.get("raw_full") or conf_sec.get("body") or "")
-            if not cand_m_text:
-                return False
-            if not dossier.condition.validate_confirmation_prose(cand_m_text, contract, **m1_kwargs).get("valid"):
-                return False
-            continue
-        return False
-    return True
+    """Deprecated citation-retry predicate kept for API compatibility; pure J1 format issues are handled in-place."""
+    return False
 
 
 def validate_initial_reply_contract(
@@ -1237,28 +1194,30 @@ def validate_initial_reply_contract(
 
     excerpt_checks: dict[str, Any] = {}
     blocking_errors: list[str] = []
+    section_occurrences = (
+        dossier.extract_labeled_section_occurrences(raw_text)
+        if raw_text and hasattr(dossier, "extract_labeled_section_occurrences")
+        else {}
+    )
+    sections_first = {k: occs[0] for k, occs in section_occurrences.items() if occs} if section_occurrences else None
+
     if check_excerpt_completeness and raw_text:
         for key in ("put", "call", "comparison", "put_counter", "call_counter"):
-            chk = dossier.inspect_excerpt_integrity(decision.get(key), raw_text, expected_section=key)
+            chk = _inspect_excerpt_compat(decision.get(key), raw_text, expected_section=key, sections=sections_first)
             excerpt_checks[key] = chk
-            if not chk["complete"]:
-                blocking_errors.append(f"j1_excerpt_incomplete:{key}:{chk['status']}")
+            if chk.get("status") in {"EMPTY", "NOT_IN_TEXT"}:
+                blocking_errors.append(f"j1_excerpt_missing:{key}:{chk['status']}")
+            elif not chk.get("complete"):
+                warnings.append(f"j1_excerpt_diagnostic:{key}:{chk['status']}")
             elif chk.get("section") not in (None, key):
-                blocking_errors.append(f"j1_excerpt_wrong_section:{key}:{chk.get('section')}")
+                warnings.append(f"j1_section_diagnostic:{key}:{chk.get('section')}")
 
     if action != "Accept":
-        rec_cit = _compute_recoverable_citation_only(
-            raw_text=raw_text,
-            blocking_errors=blocking_errors,
-            excerpt_checks=excerpt_checks,
-            contract=None,
-            m1_kwargs=None,
-        )
         return {
             "status": "CONTRACT_FAILED" if blocking_errors else "PASSED",
             "audit_scope": "NON_ACCEPT_J1_ONLY",
             "mechanical_contract_version": mech_ver,
-            "recoverable_citation_only": rec_cit,
+            "recoverable_citation_only": False,
             "warnings": warnings,
             "lossless_repairs": lossless_repairs,
             "layer1_deterministic": {
@@ -1292,24 +1251,32 @@ def validate_initial_reply_contract(
 
     if check_excerpt_completeness and raw_text:
         for key in ("historical_facts", "accepted_conditions", "confirmation_excerpt"):
-            chk = dossier.inspect_excerpt_integrity(plan.get(key), raw_text, expected_section=key)
+            if section_occurrences and len(_collect_distinct_sections(section_occurrences, key)) > 1:
+                blocking_errors.append(f"conflicting_prose_sections:condition_plan.{key}")
+            chk = _inspect_excerpt_compat(plan.get(key), raw_text, expected_section=key, sections=sections_first)
             excerpt_checks[f"condition_plan.{key}"] = chk
-            if not chk["complete"]:
-                blocking_errors.append(f"j1_excerpt_incomplete:condition_plan.{key}:{chk['status']}")
+            if chk.get("status") in {"EMPTY", "NOT_IN_TEXT"}:
+                blocking_errors.append(f"j1_excerpt_missing:condition_plan.{key}:{chk['status']}")
+            elif not chk.get("complete"):
+                warnings.append(f"j1_excerpt_diagnostic:condition_plan.{key}:{chk['status']}")
             elif chk.get("section") not in (None, key):
-                blocking_errors.append(f"j1_excerpt_wrong_section:condition_plan.{key}:{chk.get('section')}")
+                warnings.append(f"j1_section_diagnostic:condition_plan.{key}:{chk.get('section')}")
         if decision.get("depends_on_ard") is True:
             for key in ("ard_responsibility_meaning", "ard_review_on"):
+                if section_occurrences and len(_collect_distinct_sections(section_occurrences, key)) > 1:
+                    blocking_errors.append(f"conflicting_prose_sections:condition_plan.{key}")
                 val = plan.get(key)
                 if not isinstance(val, str) or not val.strip():
                     blocking_errors.append(f"ard_condition_excerpt_missing:{key}")
                 else:
-                    chk = dossier.inspect_excerpt_integrity(val, raw_text, expected_section=key)
+                    chk = _inspect_excerpt_compat(val, raw_text, expected_section=key, sections=sections_first)
                     excerpt_checks[f"condition_plan.{key}"] = chk
-                    if not chk["complete"]:
-                        blocking_errors.append(f"j1_excerpt_incomplete:condition_plan.{key}:{chk['status']}")
+                    if chk.get("status") in {"EMPTY", "NOT_IN_TEXT"}:
+                        blocking_errors.append(f"j1_excerpt_missing:condition_plan.{key}:{chk['status']}")
+                    elif not chk.get("complete"):
+                        warnings.append(f"j1_excerpt_diagnostic:condition_plan.{key}:{chk['status']}")
                     elif chk.get("section") not in (None, key, "ard", "ard_responsibility_meaning", "ard_review_on"):
-                        blocking_errors.append(f"j1_excerpt_wrong_section:condition_plan.{key}:{chk.get('section')}")
+                        warnings.append(f"j1_section_diagnostic:condition_plan.{key}:{chk.get('section')}")
 
     if check_excerpt_completeness:
         non_m_named = [
@@ -1351,7 +1318,7 @@ def validate_initial_reply_contract(
                         is_dup = True
                         break
             if is_dup:
-                blocking_errors.append("j1_excerpt_duplicate_section:condition_plan.confirmation_excerpt")
+                warnings.append("j1_duplicate_excerpt_diagnostic:condition_plan.confirmation_excerpt")
 
     if strict_clock_5m and plan.get("check_interval_ms") != 300_000:
         blocking_errors.append(f"clock_interval_not_5m:{plan.get('check_interval_ms')}")
@@ -1415,6 +1382,30 @@ def validate_initial_reply_contract(
     ]
 
     c_audit = inspect_accepted_conditions_semantics(str(plan.get("accepted_conditions") or ""))
+    if (
+        raw_text
+        and section_occurrences
+        and (conf_occs := _collect_distinct_sections(section_occurrences, "confirmation_excerpt"))
+        and len(conf_occs) == 1
+    ):
+        conf_full = str(conf_occs[0].get("raw_full") or conf_occs[0].get("full") or "")
+        conf_raw_val = str(plan.get("confirmation_excerpt") or "").strip()
+        if (
+            conf_full
+            and conf_raw_val
+            and dossier.excerpt_in_text(conf_raw_val, raw_text)
+            and _norm_review_excerpt(conf_raw_val) not in _norm_review_excerpt(conf_full)
+        ):
+            conflict_m = val_conf_fn(
+                conf_raw_val,
+                contract,
+                expected_invalidation=m1_kwargs.get("expected_invalidation"),
+                expected_interval_ms=m1_kwargs.get("expected_interval_ms"),
+                require_positive_m=False,
+            )
+            if not conflict_m.get("valid"):
+                blocking_errors.append("conflicting_confirmation_excerpts:condition_plan.confirmation_excerpt")
+
     canonical_m = (
         dossier.condition.canonical_confirmation_text(
             contract,
@@ -1428,18 +1419,11 @@ def validate_initial_reply_contract(
         and plan["check_interval_ms"] % dossier.MINUTE == 0
         else None
     )
-    rec_cit = _compute_recoverable_citation_only(
-        raw_text=raw_text,
-        blocking_errors=blocking_errors,
-        excerpt_checks=excerpt_checks,
-        contract=contract,
-        m1_kwargs=m1_kwargs,
-    )
     return {
         "status": "CONTRACT_FAILED" if blocking_errors else "PASSED",
         "audit_scope": "ACCEPT_FULL_CONTRACT",
         "mechanical_contract_version": mech_ver,
-        "recoverable_citation_only": rec_cit,
+        "recoverable_citation_only": False,
         "warnings": warnings,
         "lossless_repairs": lossless_repairs,
         "layer1_deterministic": {
@@ -1585,15 +1569,19 @@ def parse_initial_reply(
         raise ValueError("empty public decision text")
     raw_bytes = (public_text + "\n").encode("utf-8")
     lossless_repairs: list[dict[str, Any]] = [{"kind": kind} for kind in format_repairs]
-    labeled_sections = dossier.extract_labeled_sections(public_text) if effective_strict else {}
+    section_occurrences = dossier.extract_labeled_section_occurrences(public_text) if effective_strict else {}
 
     excerpt_keys = ("put", "call", "comparison", "put_counter", "call_counter")
     annotation: dict[str, Any] = {"depends_on_ard": payload.get("depends_on_ard")}
     for k in excerpt_keys:
         val_k = payload.get(k)
         if effective_strict:
-            val_k, rep_k = _expand_unambiguous_labeled_excerpt(
-                val_k, public_text, expected_section=k, sections=labeled_sections,
+            val_k, rep_k, _ = _resolve_excerpt_from_prose(
+                val_k,
+                public_text,
+                expected_section=k,
+                section_occurrences=section_occurrences,
+                allow_keep_on_section_conflict=True,
             )
             if rep_k is not None:
                 lossless_repairs.append(rep_k)
@@ -1699,46 +1687,45 @@ def parse_initial_reply(
         required_excerpts = ["historical_facts", "accepted_conditions", "confirmation_excerpt"]
         if decision["depends_on_ard"]:
             required_excerpts.extend(["ard_responsibility_meaning", "ard_review_on"])
+        eff_side_contract = _resolve_contract_from_pair(eff_contracts, decision["side"])
         for key in required_excerpts:
-            val = raw_plan.get(key)
-            if not dossier.excerpt_in_text(val, public_text):
-                if effective_strict:
-                    # Preserve full context and fail closed via ContractValidationError.
-                    err_code = f"ard_condition_excerpt_missing:{key}" if key.startswith("ard_") else f"condition_plan_excerpt_missing:{key}"
-                    report = {
-                        "status": "CONTRACT_FAILED",
-                        "audit_scope": "ACCEPT_FULL_CONTRACT",
-                        "mechanical_contract_version": getattr(dossier.condition, "MECHANICAL_CONTRACT_VERSION", "p2_strict@1"),
-                        "layer1_deterministic": {
-                            "valid": False,
-                            "blocking_errors": [err_code],
-                            "excerpt_checks": {},
-                        },
-                        "layer2_semantic_risk": {},
-                        "c_audit": {},
-                        "canonical_confirmation": None,
-                    }
-                    raise ContractValidationError(
-                        f"condition_plan.{key} must be a verbatim excerpt from public text",
-                        parsed_reply={
-                            "raw_bytes": raw_bytes,
-                            "raw_text": public_text,
-                            "annotation": annotation,
-                            "condition_plan": parsed_plan,
-                            "decision": decision,
-                            "request_payload": req_payload,
-                        },
-                        contract_validation=report,
-                    )
-                raise ValueError(f"condition_plan.{key} must be a verbatim excerpt from public text")
-            val_clean = val.strip()
-            if effective_strict and key in {"historical_facts", "accepted_conditions", "confirmation_excerpt"}:
-                val_clean, rep_plan_k = _expand_unambiguous_labeled_excerpt(
-                    val_clean, public_text, expected_section=key, sections=labeled_sections,
+            raw_val = raw_plan.get(key)
+            conflict_code = None
+            if effective_strict:
+                resolved_val, rep_plan_k, conflict_code = _resolve_excerpt_from_prose(
+                    raw_val,
+                    public_text,
+                    expected_section=key,
+                    section_occurrences=section_occurrences,
+                    contract=eff_side_contract if key == "confirmation_excerpt" else None,
+                    invalidation=invalidation if key == "confirmation_excerpt" else None,
+                    expected_interval_ms=(300_000 if effective_clock_5m else interval) if key == "confirmation_excerpt" else None,
+                    require_non_conflicting_m=(key == "confirmation_excerpt"),
+                    allow_keep_on_section_conflict=False,
                 )
+                if conflict_code is not None:
+                    _raise_strict_contract_precheck(
+                        f"{conflict_code}:condition_plan.{key}",
+                        f"condition_plan.{key} failed due to {conflict_code}",
+                        audit_scope="ACCEPT_FULL_CONTRACT",
+                        decision_obj=decision,
+                        plan_obj=parsed_plan,
+                    )
                 if rep_plan_k is not None:
                     rep_plan_k["field"] = f"condition_plan.{key}"
                     lossless_repairs.append(rep_plan_k)
+                val_clean = resolved_val.strip() if isinstance(resolved_val, str) else resolved_val
+            else:
+                val_clean = raw_val.strip() if isinstance(raw_val, str) else raw_val
+            if not dossier.excerpt_in_text(val_clean, public_text):
+                err_code = f"ard_condition_excerpt_missing:{key}" if key.startswith("ard_") else f"condition_plan_excerpt_missing:{key}"
+                _raise_strict_contract_precheck(
+                    err_code,
+                    f"condition_plan.{key} must be a verbatim excerpt from public text",
+                    audit_scope="ACCEPT_FULL_CONTRACT",
+                    decision_obj=decision,
+                    plan_obj=parsed_plan,
+                )
             parsed_plan[key] = val_clean
 
     parsed = {

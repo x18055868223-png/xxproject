@@ -1565,8 +1565,8 @@ _SECTION_LABELS = (
 )
 
 
-def extract_labeled_sections(text):
-    """Deterministically extract full paragraph text per stable Chinese S/C/M section label."""
+def extract_labeled_section_occurrences(text):
+    """Deterministically extract all occurrences per stable Chinese S/C/M section label."""
     if not isinstance(text, str) or not text.strip():
         return {}
     sections = {}
@@ -1577,7 +1577,7 @@ def extract_labeled_sections(text):
 
     def _flush():
         nonlocal current_key, current_pat, current_lines
-        if current_key and current_lines and current_key not in sections:
+        if current_key and current_lines:
             raw_full = '\n'.join(current_lines).strip()
             cleaned = re.sub(r'^[\s\-*•#>]+|\*\*', '', raw_full).strip()
             cleaned = cleaned.replace('`', '')
@@ -1586,7 +1586,7 @@ def extract_labeled_sections(text):
                 body = cleaned[m_pref.end():].strip() if m_pref else raw_full
             else:
                 body = raw_full
-            sections[current_key] = {'raw_full': raw_full, 'full': raw_full, 'body': body}
+            sections.setdefault(current_key, []).append({'raw_full': raw_full, 'full': raw_full, 'body': body})
         current_key = None
         current_pat = None
         current_lines = []
@@ -1636,7 +1636,12 @@ def extract_labeled_sections(text):
     return sections
 
 
-def inspect_excerpt_integrity(excerpt, text, *, expected_section=None):
+def extract_labeled_sections(text):
+    """Deterministically extract full paragraph text per stable Chinese S/C/M section label."""
+    return {k: occs[0] for k, occs in extract_labeled_section_occurrences(text).items() if occs}
+
+
+def inspect_excerpt_integrity(excerpt, text, *, expected_section=None, sections=None):
     """Classify verbatim excerpt completeness: complete paragraph vs sentence truncation vs mid-word cut.
 
     Covers full section if explicitly labeled, and supports natural prose paragraphs without requiring
@@ -1650,7 +1655,8 @@ def inspect_excerpt_integrity(excerpt, text, *, expected_section=None):
     ex_stripped = excerpt.strip()
     ends_terminal = bool(_TERMINAL_END_RE.search(ex_stripped))
     norm_ex = _norm_excerpt(ex_stripped)
-    sections = extract_labeled_sections(text)
+    if sections is None:
+        sections = extract_labeled_sections(text)
     owner = None
     matched_section = expected_section
     from_labeled_section = False

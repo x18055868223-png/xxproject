@@ -220,8 +220,16 @@ def accepted(hand):
     if meta.get('input_profile') == p0_profile and (not pv or pv == review.INITIAL_SYSTEM_PROMPT_VERSION):
         raise Blocked('prompt_version_mismatch')
     lock_deadline = _lock_deadline_ms(expected, decision, decided, expiry)
+    att_dir = hand / 'responses' / dossier.key(attempt['attempt_id'])
+    sealed_plan = (
+        optional(att_dir / 'condition_plan.json')
+        if attempt.get('status') == 'VALID' and attempt.get('contract_validation_status') == 'PASSED'
+        else None
+    )
     out = dict(origin=origin, contract=contract, contracts=contracts_map, source=source, decision=decision,
                raw=raw.decode('utf-8'), deadline_ms=lock_deadline, reply_deadline_ms=deadline)
+    if isinstance(sealed_plan, dict):
+        out['sealed_contract_plan'] = sealed_plan
     if pv is not None:
         out['prompt_version'] = pv
     if plan_pv is not None:
@@ -307,17 +315,25 @@ def condition_plan(proof, plan):
     out_plan = {**{k: plan[k] for k in (*required, 'check_interval_ms', 'invalidation', *(keys if depends else ()))},
                 'require_outside_at_t0': outside}
     if strict_mode:
-        decision_obj = dict((proof.get('decision') or {}).get('judgment') or {})
-        contract_arg = proof.get('contracts') or proof.get('contract')
-        check_res = review.validate_initial_reply_contract(
-            {'raw_text': proof['raw'], 'decision': decision_obj, 'condition_plan': out_plan},
-            contract_arg,
-            strict_clock_5m=True,
-            check_excerpt_completeness=True,
-            require_outside_at_t0=True,
+        sealed = proof.get('sealed_contract_plan')
+        check_fields = ('invalidation', 'check_interval_ms', *required, *(keys if depends else ()))
+        sealed_matches = (
+            isinstance(sealed, dict)
+            and all(sealed.get(f) == out_plan.get(f) for f in check_fields)
+            and (sealed.get('require_outside_at_t0', True if not is_p5_strict else None) is True)
         )
-        if check_res.get('status') != 'PASSED':
-            raise Blocked('condition_contract_validation_failed')
+        if not sealed_matches:
+            decision_obj = dict((proof.get('decision') or {}).get('judgment') or {})
+            contract_arg = proof.get('contracts') or proof.get('contract')
+            check_res = review.validate_initial_reply_contract(
+                {'raw_text': proof['raw'], 'decision': decision_obj, 'condition_plan': out_plan},
+                contract_arg,
+                strict_clock_5m=True,
+                check_excerpt_completeness=True,
+                require_outside_at_t0=True,
+            )
+            if check_res.get('status') != 'PASSED':
+                raise Blocked('condition_contract_validation_failed')
     return out_plan
 
 
@@ -4142,11 +4158,7 @@ def _auto_deal(d, plan, archive_root, service, *, llm_config=None):
                 )
                 rem_svc_post = service_deadline_mono - time.monotonic()
                 rem_reply_s = ((deadline_post - now_post) / 1000.0) if deadline_post is not None else 600.0
-                next_heavy_post = _next_initial_is_heavy(
-                    eff_cfg,
-                    existing_post,
-                    retry_citation_contract=bool(r_post.get('retry_citation_contract')),
-                )
+                next_heavy_post = _next_initial_is_heavy(eff_cfg, existing_post)
                 min_inline_svc_s = (
                     min(320.0, max(90.0, rem_reply_s + 5.0))
                     if next_heavy_post
@@ -4272,19 +4284,11 @@ def _initial_retry_decision(
             or last_auto.get('contract_validation_status') == 'CONTRACT_FAILED'
         )
     )
-    retry_citation_contract = bool(
-        retry_precond
-        and isinstance(last_auto, dict)
-        and last_auto.get('status') == 'PARSE_FAILED'
-        and last_cfg.get('delivery_state') == 'RECEIVED'
-        and is_contract_fail
-        and review.is_recoverable_citation_contract_failure(last_auto.get('contract_validation'))
-    )
     retry_parse_failed = bool(
         retry_precond
         and last_auto.get('status') == 'PARSE_FAILED'
         and last_cfg.get('delivery_state') == 'RECEIVED'
-        and (not is_contract_fail or retry_citation_contract)
+        and not is_contract_fail
     )
     raw_ra = last_cfg.get('retry_after_s')
     ra_ms = (
@@ -4306,7 +4310,6 @@ def _initial_retry_decision(
     return dict(
         can_retry=bool(retry_parse_failed or retry_provider_overload),
         retry_parse_failed=retry_parse_failed,
-        retry_citation_contract=retry_citation_contract,
         retry_provider_overload=retry_provider_overload,
         ra_ms=ra_ms,
         last_rec_ms=last_rec_ms,
@@ -4315,12 +4318,12 @@ def _initial_retry_decision(
     )
 
 
-def _next_initial_is_heavy(cfg, existing_auto, *, retry_citation_contract=False):
+def _next_initial_is_heavy(cfg, existing_auto):
     if not isinstance(cfg, dict):
         return False
     fb_target = _standby_model_target(cfg)
     used_fb = any((a.get('configuration') or {}).get('is_fallback') is True for a in (existing_auto or ()))
-    uses_fb = bool(existing_auto and fb_target is not None and not used_fb and not retry_citation_contract)
+    uses_fb = bool(existing_auto and fb_target is not None and not used_fb)
     next_model = fb_target['model'] if uses_fb else cfg.get('model')
     timeout_explicit = bool(cfg.get('fallback_timeout_explicit') if uses_fb else cfg.get('timeout_explicit'))
     return bool(
@@ -4392,7 +4395,6 @@ def _deal_hand(
     link_todo = None
     llm_input = None
     retry_parse_failed = False
-    retry_citation_contract = False
     retry_provider_overload = False
     with _short_writer(d):
         _reconcile_unfinished_initial_calls(d, hand)
@@ -4454,7 +4456,6 @@ def _deal_hand(
                 recover_only=recover_only,
             )
             retry_parse_failed = elig['retry_parse_failed']
-            retry_citation_contract = bool(elig.get('retry_citation_contract'))
             retry_provider_overload = elig['retry_provider_overload']
             can_retry_initial = elig['can_retry']
             window_has_45s = elig['window_has_45s']
@@ -4521,7 +4522,6 @@ def _deal_hand(
     already_used_fallback = any((a.get('configuration') or {}).get('is_fallback') is True for a in existing_auto)
     use_fallback = bool(
         (retry_parse_failed or retry_provider_overload)
-        and not retry_citation_contract
         and fb_target is not None
         and not already_used_fallback
     )
@@ -4771,11 +4771,7 @@ def recover_initial(d, service, *, llm_config=None, allow_post_window_retry=Fals
                         )
                         if elig['can_dispatch']:
                             rem_svc = (eff_service_deadline - time.monotonic()) if eff_service_deadline is not None else None
-                            next_heavy = _next_initial_is_heavy(
-                                eff_cfg,
-                                existing_auto,
-                                retry_citation_contract=bool(elig.get('retry_citation_contract')),
-                            )
+                            next_heavy = _next_initial_is_heavy(eff_cfg, existing_auto)
                             min_post_svc_s = (
                                 320.0
                                 if next_heavy and (deadline is None or (deadline - now) >= 420_000)
@@ -5403,8 +5399,9 @@ def audit_record(hand, now, tracker_status, *, detail=False):
         and isinstance(lock_deadline_ms, int) and now < lock_deadline_ms
     )
     lock_state = ('TRACKING' if tracker in (tracker_status or {}) else 'ARCHIVED' if terminal_meta else 'TRACKER_UNAVAILABLE'
-                  if tracker else 'LOCK_BLOCKED' if blocked or any(n['state'] == 'LOCK_BLOCKED' for n in notes)
+                  if tracker else 'LOCK_BLOCKED' if blocked
                   else 'PENDING_LOCK' if is_pending_active
+                  else 'LOCK_BLOCKED' if any(n['state'] == 'LOCK_BLOCKED' for n in notes)
                   else 'LINK_UNVERIFIED' if any(n['state'] == 'LINK_UNVERIFIED' for n in notes)
                   else req['state'] if isinstance(req, dict) and req.get('state')
                   else 'LINK_UNVERIFIED' if tracking_read_error is not None
@@ -5518,10 +5515,19 @@ def audit_record(hand, now, tracker_status, *, detail=False):
                                   pin_records=len(source['history'])))
     ep = hand.parent.parent / 'episodes' / receipt['origin']['dossier_episode_id'] if receipt else None
     if ep is None and decision and frozen:
-        ep = next((p.parent for p in (hand.parent.parent / 'episodes').glob('episode_*/episode.json')
-                   if load(p).get('hand_id') == hand.name), None)
-    sorted_events = sorted((load(p) for p in (ep / 'events').glob('*.json')),
-                           key=lambda e: (e['recorded_at_ms'], e['event_id'])) if ep else []
+        for ep_meta_p in (hand.parent.parent / 'episodes').glob('episode_*/episode.json'):
+            ep_doc, ep_err = _optional_tolerant(ep_meta_p)
+            if ep_err is None and isinstance(ep_doc, dict) and ep_doc.get('hand_id') == hand.name:
+                ep = ep_meta_p.parent
+                break
+    sorted_events = []
+    if ep:
+        for ev_p in (ep / 'events').glob('*.json'):
+            ev_doc, ev_err = _optional_tolerant(ev_p)
+            if (ev_err is None and isinstance(ev_doc, dict)
+                    and isinstance(ev_doc.get('recorded_at_ms'), int) and ev_doc.get('event_id')):
+                sorted_events.append(ev_doc)
+        sorted_events.sort(key=lambda e: (e['recorded_at_ms'], e['event_id']))
     _grid_obs_kinds = {'CONDITION_TRIGGERED', 'CONDITION_NOT_TRIGGERED', 'CONDITION_UNKNOWN', 'OBSERVATION'}
     lifecycle_events = [e for e in sorted_events if e.get('kind') not in _grid_obs_kinds]
     trig_evs = [e for e in sorted_events if e.get('kind') == 'CONDITION_TRIGGERED']

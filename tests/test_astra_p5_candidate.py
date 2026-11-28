@@ -743,24 +743,45 @@ def test_all_six_anti_bypass_gates_and_legacy_compat(tmp_path):
     with pytest.raises(review.ContractValidationError, match="missing_prompt_version"):
         review.parse_initial_reply({"text": _build_valid_p5_reply()}, req_missing_pv)
 
-    # 3. Top-level-only ARD fields fail closed when depends_on_ard=True
+    # 3. Single-source prose resolution fills omitted condition_plan.ard_* when unambiguous in prose,
+    #    while truly missing ARD prose+JSON still fails closed with ard_condition_excerpt_missing.
     top_ard_reply = _build_valid_p5_reply(depends_on_ard=True)
-    # Remove ard_* from condition_plan and place at top-level JSON
     body_part, j_part = top_ard_reply.split("<ANNOTATION_JSON>")
     j_obj = json.loads(j_part.split("</ANNOTATION_JSON>")[0])
     j_obj["ard_responsibility_meaning"] = j_obj["condition_plan"].pop("ard_responsibility_meaning")
     j_obj["ard_review_on"] = j_obj["condition_plan"].pop("ard_review_on")
     crafted_ard = body_part + "<ANNOTATION_JSON>" + json.dumps(j_obj, ensure_ascii=False) + "</ANNOTATION_JSON>"
+    parsed_ard_ok = review.parse_initial_reply({"text": crafted_ard}, copy.deepcopy(req_p5))
+    assert parsed_ard_ok["contract_validation"]["status"] == "PASSED"
+    assert parsed_ard_ok["condition_plan"]["ard_responsibility_meaning"].startswith("ARD 责任相关性")
+
+    body_no_ard = "\n\n".join(
+        p for p in body_part.split("\n\n") if not p.startswith(("ARD 责任相关性：", "ARD 复核变化："))
+    )
+    crafted_ard_missing = body_no_ard + "\n\n<ANNOTATION_JSON>" + json.dumps(j_obj, ensure_ascii=False) + "</ANNOTATION_JSON>"
     with pytest.raises(review.ContractValidationError, match="ard_responsibility_meaning") as exc_ard:
-        review.parse_initial_reply({"text": crafted_ard}, copy.deepcopy(req_p5))
+        review.parse_initial_reply({"text": crafted_ard_missing}, copy.deepcopy(req_p5))
     assert any("ard_condition_excerpt_missing" in err for err in exc_ard.value.contract_validation["layer1_deterministic"]["blocking_errors"])
 
-    # 4. Reject / Unknown audit_scope='NON_ACCEPT_J1_ONLY', fails closed when truncated
+    # 4. Reject / Unknown audit_scope='NON_ACCEPT_J1_ONLY': truncated comparison recovers from unique prose,
+    #    while absent comparison prose + non-verbatim comparison fails closed cleanly.
     parsed_rej = review.parse_initial_reply({"text": _build_valid_p5_reply(action_header="## Reject")}, copy.deepcopy(req_p5))
     assert parsed_rej["contract_validation"]["audit_scope"] == "NON_ACCEPT_J1_ONLY"
     assert parsed_rej["contract_validation"]["status"] == "PASSED"
-    with pytest.raises(review.ContractValidationError, match="j1_excerpt_incomplete"):
-        review.parse_initial_reply({"text": _build_valid_p5_reply(action_header="## Reject", truncate_comparison=True)}, copy.deepcopy(req_p5))
+    parsed_rej_trunc = review.parse_initial_reply(
+        {"text": _build_valid_p5_reply(action_header="## Reject", truncate_comparison=True)},
+        copy.deepcopy(req_p5),
+    )
+    assert parsed_rej_trunc["contract_validation"]["status"] == "PASSED"
+    rej_body_bad, rej_json_bad = _build_valid_p5_reply(action_header="## Reject").split("<ANNOTATION_JSON>")
+    rej_obj_bad = json.loads(rej_json_bad.split("</ANNOTATION_JSON>")[0])
+    rej_obj_bad["comparison"] = "未出现在正文中的改写对比"
+    rej_body_no_comp = "\n\n".join(p for p in rej_body_bad.split("\n\n") if not p.startswith("两侧对比择优："))
+    with pytest.raises(review.ContractValidationError, match="verbatim"):
+        review.parse_initial_reply(
+            {"text": rej_body_no_comp + "\n\n<ANNOTATION_JSON>" + json.dumps(rej_obj_bad, ensure_ascii=False) + "</ANNOTATION_JSON>"},
+            copy.deepcopy(req_p5),
+        )
 
     # 5. Dossiers.respond() closes spoofed contract_validation={'status':'PASSED'}, unknown version, and M3 malformed condition_plan without crashing
     wb, d, hand, src, cpair, req_d, now, exp_ms = _seed_locked_candidate_episode(tmp_path / "g1", SLOT)
@@ -1943,8 +1964,9 @@ def _d959_reply_text(*, confirmation_excerpt: str) -> str:
 
 
 def test_step1_d959_cross_section_regression_and_positive_m_anchor(monkeypatch):
-    # 1. Exact real hand_d9598e9b Arm B defect: confirmation_excerpt copied `comparison`
-    bad_text = _d959_reply_text(confirmation_excerpt=_D959_COMP)
+    # 1. Exact real hand_d9598e9b Arm B defect: confirmation_excerpt copied `comparison`, while unique
+    #    valid M prose `_D959_M` exists in the reply -> resolved deterministically from prose in 1 pass!
+    bad_pointer_text = _d959_reply_text(confirmation_excerpt=_D959_COMP)
     req_p5 = review.build_initial_request_payload(
         "# mock user",
         contract_pair=_D959_CONTRACTS,
@@ -1953,21 +1975,21 @@ def test_step1_d959_cross_section_regression_and_positive_m_anchor(monkeypatch):
         input_profile=player.INPUT_PROFILE_P0_STRICT,
         fidelity="EXACT",
     )
-    with pytest.raises(review.ContractValidationError) as exc_info:
-        review.parse_initial_reply({"text": bad_text, "model": "deepseek-reasoner"}, req_p5, contracts=_D959_CONTRACTS)
-    cv_fail = exc_info.value.contract_validation
-    assert cv_fail["status"] == "CONTRACT_FAILED"
-    errs = cv_fail["layer1_deterministic"]["blocking_errors"]
-    assert "j1_excerpt_incomplete:condition_plan.confirmation_excerpt:WRONG_SECTION" in errs
-    assert "j1_excerpt_duplicate_section:condition_plan.confirmation_excerpt" in errs
-    assert "m1_contract_violation:missing_m_mechanical_anchor" in errs
+    parsed_resolved = review.parse_initial_reply(
+        {"text": bad_pointer_text, "model": "deepseek-reasoner"}, req_p5, contracts=_D959_CONTRACTS
+    )
+    cv_res = parsed_resolved["contract_validation"]
+    assert cv_res["status"] == "PASSED"
+    assert parsed_resolved["condition_plan"]["confirmation_excerpt"] == _D959_M
+    assert any("excerpt_resolved_from_prose:condition_plan.confirmation_excerpt" in w for w in cv_res["warnings"])
 
-    # 2. Swapping confirmation_excerpt to the true L17 M section passes deterministically
+    # 2. Providing the true L17 M section directly passes cleanly with zero repair warnings
     good_text = _d959_reply_text(confirmation_excerpt=_D959_M)
     parsed_ok = review.parse_initial_reply({"text": good_text, "model": "deepseek-reasoner"}, req_p5, contracts=_D959_CONTRACTS)
     assert parsed_ok["contract_validation"]["status"] == "PASSED"
+    assert not parsed_ok["contract_validation"]["warnings"]
 
-    # 3. Direct mock forcing inspect_excerpt_integrity(complete=True, section='comparison') triggers j1_excerpt_wrong_section
+    # 3. Direct mock forcing inspect_excerpt_integrity(complete=True, section='comparison') emits non-blocking diagnostic only
     orig_inspect = dossier.inspect_excerpt_integrity
 
     def fake_inspect(excerpt, text, *, expected_section=None):
@@ -1993,8 +2015,8 @@ def test_step1_d959_cross_section_regression_and_positive_m_anchor(monkeypatch):
     }
     parsed_for_contract["condition_plan"] = parsed_for_contract["decision"]["condition_plan"]
     cv_mock = review.validate_initial_reply_contract(parsed_for_contract, contracts=_D959_CONTRACTS)
-    assert cv_mock["status"] == "CONTRACT_FAILED"
-    assert "j1_excerpt_wrong_section:condition_plan.confirmation_excerpt:comparison" in cv_mock["layer1_deterministic"]["blocking_errors"]
+    assert cv_mock["status"] == "PASSED"
+    assert "j1_section_diagnostic:condition_plan.confirmation_excerpt:comparison" in cv_mock["warnings"]
 
     # 4. Positive M validation & invented UTC 5-minute grid vs negated valid prose
     c_call = _D959_CONTRACTS["call"]
@@ -2384,6 +2406,8 @@ def test_step2_6311071c_live_readiness_and_pending_lock_p5_interop(tmp_path, mon
     clk[0] += 10 * M
     write_fmz(snaps, native_gate(ts=clk[0] - 1_000), now=clk[0])
     wb.refresh(now_ms=clk[0], record_daily=False)
+    with serving(wb) as base_url:
+        tracking.sync_open(d, wb_post(base_url, wb))
     link_rec = dossier.read(hand / "tracking" / "link.json")
     assert link_rec["state"] == "SHADOW_LOCK_CREATED"
     assert link_rec["lock_mode"] == "DELAYED_LOCK" and link_rec["delayed_lock"] is True
@@ -2612,5 +2636,88 @@ def test_expedited_shadow_export_32mb_cap_and_cutover_schedule_zero_missed(tmp_p
         (p / "expected.json").is_file() and dossier.read(p / "expected.json")["plan"]["plan_id"] == "daily_r16@4"
         for p in out_rb
     )
+
+
+def test_single_source_prose_resolution_and_conflict_guards():
+    req_p5 = review.build_initial_request_payload(
+        "# mock user",
+        contract_pair=_D959_CONTRACTS,
+        model="deepseek-v4-pro",
+        prompt_version=review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+        input_profile=player.INPUT_PROFILE_P0_STRICT,
+        fidelity="EXACT",
+    )
+    prose, _json_raw = _d959_reply_text(confirmation_excerpt=_D959_M).split("<ANNOTATION_JSON>")
+
+    # 1) Prose-only single source of truth: JSON carries only structural decision/condition_plan fields
+    minimal_ann = {
+        "depends_on_ard": False,
+        "condition_plan": {
+            "invalidation": "entry_not_returned",
+            "check_interval_ms": 300_000,
+            "require_outside_at_t0": True,
+        },
+    }
+    parsed_minimal = review.parse_initial_reply(
+        {"text": prose + "<ANNOTATION_JSON>\n" + json.dumps(minimal_ann, ensure_ascii=False) + "\n</ANNOTATION_JSON>"},
+        copy.deepcopy(req_p5),
+        contracts=_D959_CONTRACTS,
+    )
+    assert parsed_minimal["contract_validation"]["status"] == "PASSED"
+    assert parsed_minimal["condition_plan"]["confirmation_excerpt"] == _D959_M
+    assert parsed_minimal["decision"]["comparison"] == _D959_COMP
+
+    # 2) Duplicate identical M section is non-conflicting and resolves cleanly
+    dup_identical_prose = prose.rstrip() + "\n\n" + _D959_M + "\n\n"
+    parsed_dup_same = review.parse_initial_reply(
+        {"text": dup_identical_prose + "<ANNOTATION_JSON>\n" + json.dumps(minimal_ann, ensure_ascii=False) + "\n</ANNOTATION_JSON>"},
+        copy.deepcopy(req_p5),
+        contracts=_D959_CONTRACTS,
+    )
+    assert parsed_dup_same["contract_validation"]["status"] == "PASSED"
+
+    # 3) Negative: two conflicting `破坏确认口径：` sections MUST fail closed (never pick arbitrarily)
+    conflicting_m2 = (
+        "破坏确认口径：采用 new_entry，每5分钟检查一次，指数严格高于 Call 短腿 60,000（含保护腿 62,000 边界及外侧）即触发。"
+    )
+    conflicting_prose = prose.rstrip() + "\n\n" + conflicting_m2 + "\n\n"
+    with pytest.raises(review.ContractValidationError) as exc_conf:
+        review.parse_initial_reply(
+            {"text": conflicting_prose + "<ANNOTATION_JSON>\n" + json.dumps(minimal_ann, ensure_ascii=False) + "\n</ANNOTATION_JSON>"},
+            copy.deepcopy(req_p5),
+            contracts=_D959_CONTRACTS,
+        )
+    assert "conflicting_prose_sections:condition_plan.confirmation_excerpt" in exc_conf.value.contract_validation["layer1_deterministic"]["blocking_errors"]
+
+    # 4) Negative: JSON points to a section whose wording actively contradicts M1 -> conflicting_confirmation_excerpts
+    bad_comp = "两侧对比择优：Call 仅限制在 60,000 至 62,000 有限区间，每60分钟整点核验一次。"
+    prose_bad_comp = prose.replace(_D959_COMP, bad_comp)
+    ann_conflict = {
+        "depends_on_ard": False,
+        "condition_plan": {
+            "invalidation": "entry_not_returned",
+            "check_interval_ms": 300_000,
+            "require_outside_at_t0": True,
+            "confirmation_excerpt": bad_comp,
+        },
+    }
+    with pytest.raises(review.ContractValidationError) as exc_mix:
+        review.parse_initial_reply(
+            {"text": prose_bad_comp + "<ANNOTATION_JSON>\n" + json.dumps(ann_conflict, ensure_ascii=False) + "\n</ANNOTATION_JSON>"},
+            copy.deepcopy(req_p5),
+            contracts=_D959_CONTRACTS,
+        )
+    assert "conflicting_confirmation_excerpts:condition_plan.confirmation_excerpt" in exc_mix.value.contract_validation["layer1_deterministic"]["blocking_errors"]
+
+    # 5) Negative: missing substantive M prose -> missing_m_mechanical_anchor
+    prose_no_m = prose.replace(_D959_M, "").strip()
+    assert "破坏确认口径" not in prose_no_m
+    with pytest.raises(review.ContractValidationError) as exc_nom:
+        review.parse_initial_reply(
+            {"text": prose_no_m + "\n\n<ANNOTATION_JSON>\n" + json.dumps(minimal_ann, ensure_ascii=False) + "\n</ANNOTATION_JSON>"},
+            copy.deepcopy(req_p5),
+            contracts=_D959_CONTRACTS,
+        )
+    assert any("condition_plan_excerpt_missing:confirmation_excerpt" in e for e in exc_nom.value.contract_validation["layer1_deterministic"]["blocking_errors"])
 
 

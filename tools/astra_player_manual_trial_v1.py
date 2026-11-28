@@ -21,7 +21,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
@@ -264,10 +264,23 @@ def run_deal_worker(
         "prepare_deal",
         {
             "candidate_round": cand_round,
-            "allow_refresh": True,
+            "allow_refresh": False,
             "input_profile": input_profile,
         },
     )
+    if (
+        isinstance(prep, dict)
+        and prep.get("readiness_status") in {"L3_OR_L4_INCOMPLETE", "DISCOVERY_INCOMPLETE", "STALE_OR_PRE_SLOT_VIEW"}
+        and int(prep.get("deribit_cooldown_remaining_ms") or 0) == 0
+    ):
+        prep = eff_service(
+            "prepare_deal",
+            {
+                "candidate_round": cand_round,
+                "allow_refresh": True,
+                "input_profile": input_profile,
+            },
+        )
     if not (
         isinstance(prep, dict)
         and prep.get("ready_for_deal") is True
@@ -537,6 +550,35 @@ def _prepare_archive_readonly_view(archive: Path, archive_view: Path, *, service
                 shutil.copytree(src, dst, dirs_exist_ok=True)
 
 
+def _resolve_readonly_prod_cooldown_files(wb_env_file: Mapping[str, str]) -> tuple[Path, ...]:
+    if os.name == "nt" and "ASTRA_DERIBIT_COOLDOWN_FILE" not in wb_env_file:
+        return ()
+    raw = (wb_env_file.get("ASTRA_DERIBIT_COOLDOWN_FILE") or "/var/lib/xxproject/workbench/deribit_cooldown.json").strip()
+    if not raw:
+        return ()
+    return (Path(raw),)
+
+
+def _active_cooldown_remaining_ms(paths: Sequence[Path], *, now_ms: int | None = None) -> int:
+    now = int(time.time() * 1000) if now_ms is None else int(now_ms)
+    best_rem = 0
+    for p in paths:
+        try:
+            if not p.is_file():
+                continue
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        until = data.get("cooldown_until_ms")
+        if isinstance(until, bool) or not isinstance(until, int):
+            continue
+        if now < until <= now + 360_000:
+            best_rem = max(best_rem, until - now)
+    return best_rem
+
+
 def _build_workbench_env(
     wb_env_file: Mapping[str, str],
     *,
@@ -546,6 +588,8 @@ def _build_workbench_env(
     archive: Path,
     wb_token: str,
     shadow_token: str,
+    cooldown_file: Path | None = None,
+    readonly_cooldown_files: Sequence[Path] = (),
 ) -> dict[str, str]:
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONUNBUFFERED": "1", "PYTHONDONTWRITEBYTECODE": "1"}
     if os.name != "nt":
@@ -553,6 +597,7 @@ def _build_workbench_env(
     for key in _WORKBENCH_READONLY_MARKET_KEYS:
         if key in wb_env_file:
             env[key] = wb_env_file[key]
+    eff_cd_file = cooldown_file if cooldown_file is not None else (wb_state / "deribit_cooldown.json")
     env.update(
         {
             "ASTRA_WORKBENCH_HOST": "127.0.0.1",
@@ -562,7 +607,7 @@ def _build_workbench_env(
             "ASTRA_AI_SHADOW_DOSSIER_ROOT": str(shadow_root),
             "ASTRA_AI_SHADOW_EXPERIMENT": "1",
             "ASTRA_AI_SHADOW_LOCK_TOKEN": shadow_token,
-            "ASTRA_DERIBIT_COOLDOWN_FILE": str(wb_state / "deribit_cooldown.json"),
+            "ASTRA_DERIBIT_COOLDOWN_FILE": str(eff_cd_file),
             "ASTRA_WORKBENCH_USAGE_LEDGER": str(wb_state / "unused_wb_ledger.json"),
             "ASTRA_WORKBENCH_REFRESH_SECONDS": "120",
             "ASTRA_SCHEDULED_REVIEW_HOURS_UTC": "",
@@ -575,6 +620,8 @@ def _build_workbench_env(
             "ASTRA_EXEC_STATUS_PATH": "",
         }
     )
+    if readonly_cooldown_files:
+        env["ASTRA_DERIBIT_COOLDOWN_READONLY_FILES"] = os.pathsep.join(str(p) for p in readonly_cooldown_files)
     return env
 
 
@@ -585,20 +632,27 @@ def _build_deal_env(
     deal_run: Path,
     shadow_root: Path,
     shadow_token: str,
+    cooldown_file: Path | None = None,
+    readonly_cooldown_files: Sequence[Path] = (),
 ) -> dict[str, str]:
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONUNBUFFERED": "1", "PYTHONDONTWRITEBYTECODE": "1"}
     if os.name != "nt":
         env["HOME"] = str(deal_run)
     env.update(llm_env_file)
     env.update(wb_env_file)
+    eff_cd_file = cooldown_file if cooldown_file is not None else (deal_run / "deribit_cooldown.json")
     env.update(
         {
             "ASTRA_AI_SHADOW_LOCK_TOKEN": shadow_token,
             "ASTRA_AI_SHADOW_DOSSIER_ROOT": str(shadow_root),
-            "ASTRA_DERIBIT_COOLDOWN_FILE": str(deal_run / "deribit_cooldown.json"),
+            "ASTRA_DERIBIT_COOLDOWN_FILE": str(eff_cd_file),
             "ASTRA_WORKBENCH_STATE_DIR": str(deal_run / "unused_wb_state"),
         }
     )
+    if readonly_cooldown_files:
+        env["ASTRA_DERIBIT_COOLDOWN_READONLY_FILES"] = os.pathsep.join(str(p) for p in readonly_cooldown_files)
+    else:
+        env.pop("ASTRA_DERIBIT_COOLDOWN_READONLY_FILES", None)
     return env
 
 
@@ -662,12 +716,14 @@ def _managed_trial_root(*, service_identities: bool, keep_temp: bool):
         deal_run = trial_root / "deal_run"
         exec_state = trial_root / "exec_state"
         archive_view = trial_root / "archive_view"
+        shared_cd_dir = trial_root / "shared_cooldown"
         for d_path, user, grp_name, mode in (
             (shadow_root, "bitnami", "research", 0o2750),
             (wb_state, "astra-workbench", "astra-workbench", 0o750),
             (deal_run, "bitnami", "research", 0o750),
             (exec_state, "astra-exec", "astra-exec", 0o700),
             (archive_view, "bitnami", "research", 0o750),
+            (shared_cd_dir, "bitnami", "research", 0o2770),
         ):
             d_path.mkdir(parents=True, exist_ok=True)
             if service_identities:
@@ -713,7 +769,16 @@ def run_manual_trial(
         deal_run = trial_root / "deal_run"
         exec_state = trial_root / "exec_state"
         archive_view = trial_root / "archive_view"
+        shared_cd_file = trial_root / "shared_cooldown" / "deribit_cooldown.json"
+        ro_cd_files = _resolve_readonly_prod_cooldown_files(wb_env_map)
         _prepare_archive_readonly_view(archive, archive_view, service_identities=service_identities)
+
+        pre_cd_deadline = time.monotonic() + float(workbench_ready_timeout_s)
+        while ro_cd_files and time.monotonic() < pre_cd_deadline:
+            pre_rem_ms = _active_cooldown_remaining_ms(ro_cd_files)
+            if pre_rem_ms <= 0:
+                break
+            time.sleep(min(pre_rem_ms / 1000.0 + 0.5, max(0.5, pre_cd_deadline - time.monotonic())))
 
         port = _pick_free_port()
         wb_url = f"http://127.0.0.1:{port}"
@@ -730,6 +795,8 @@ def run_manual_trial(
             archive=archive,
             wb_token=wb_token,
             shadow_token=shadow_token,
+            cooldown_file=shared_cd_file,
+            readonly_cooldown_files=ro_cd_files,
         )
         deal_env = _build_deal_env(
             llm_env_map,
@@ -737,6 +804,8 @@ def run_manual_trial(
             deal_run=deal_run,
             shadow_root=shadow_root,
             shadow_token=shadow_token,
+            cooldown_file=shared_cd_file,
+            readonly_cooldown_files=ro_cd_files,
         )
         exec_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONUNBUFFERED": "1", "PYTHONDONTWRITEBYTECODE": "1"}
         if os.name != "nt":
@@ -809,7 +878,8 @@ def run_manual_trial(
                     and deal_receipt.get("llm_called") is False
                 ):
                     break
-                time.sleep(11.0)
+                eff_cd_ms = _active_cooldown_remaining_ms([shared_cd_file, *ro_cd_files])
+                time.sleep(max(2.0, min(60.0, (eff_cd_ms / 1000.0) + 1.5)))
                 readiness = _wait_workbench_ready(
                     wb_proc,
                     wb_url,

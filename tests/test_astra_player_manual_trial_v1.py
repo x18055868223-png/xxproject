@@ -224,3 +224,123 @@ def test_manual_trial_reject_not_ready_and_preflight(
     assert pf_exec["ok"] is True
     assert "expected.json" in pf_exec["direct_reads"]
     assert "evidence/identity.json" in pf_exec["direct_reads"]
+
+
+def test_manual_trial_hand4924_wrong_section_locks_in_one_call_and_projection_hardening(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 1) Reconstructed hand_4924 wrong-section confirmation_excerpt + prose-only minimal JSON -> 1 LLM call -> SHADOW_LOCK_CREATED
+    clean_accept = p5_e2e._strict_p5_reply_text(
+        "## Accept / Put",
+        short_strike=60_000,
+        long_strike=58_000,
+        require_outside_at_t0=True,
+    )
+    prose, json_part = clean_accept.split("<ANNOTATION_JSON>")
+    ann = json.loads(json_part.split("</ANNOTATION_JSON>")[0].strip())
+    ann["condition_plan"]["confirmation_excerpt"] = ann["comparison"]
+    wrong_sec_reply = prose + "<ANNOTATION_JSON>\n" + json.dumps(ann, ensure_ascii=False) + "\n</ANNOTATION_JSON>"
+
+    calls_4924: list[dict] = []
+    fx = _setup_manual_trial_env(tmp_path / "h4924", monkeypatch, reply_text=wrong_sec_reply, llm_calls_log=calls_4924)
+    with serving(fx["wb"]) as wb_url, p5_e2e._sse_mock_server(fx["mock_llm"]) as (llm_ep, _):
+        svc = post(wb_url, fx["wb"])
+        rec = manual_trial.run_deal_worker(
+            tools_dir=TOOLS,
+            trial_root=fx["trial_root"],
+            plan_path=fx["plan_path"],
+            archive_view=fx["archive_view"],
+            workbench_url=wb_url,
+            reference="manual_trial_4924_in_place",
+            service=svc,
+            llm_config={
+                "api_key": "k",
+                "model": "deepseek-v4-pro",
+                "endpoint": llm_ep,
+                "budget": signal_llm_review.DailyHttpBudget(fx["ledger_path"], limit=20),
+            },
+            clock=lambda: fx["clk"][0],
+        )
+    assert len(calls_4924) == 1
+    assert rec["ok"] is True
+    assert rec["decision_action"] == "Accept"
+    assert rec["link"]["state"] == "SHADOW_LOCK_CREATED"
+    exec_chk = manual_trial.run_exec_verify_worker(
+        tools_dir=TOOLS,
+        trial_root=fx["trial_root"],
+        dossier_id=rec["dossier_id"],
+        hand_id=rec["hand_id"],
+        p5_episode_id=rec["link"]["dossier_episode_id"],
+    )
+    assert exec_chk["ok"] is True
+    assert exec_chk["handoff_contract"]["decision"] == "Accept"
+    assert exec_chk["coordinator_status"]["mode"] == "SHADOW_ONLY"
+
+    # 2) Read-only cooldown inheritance in astra_deribit_cooldown_v1
+    from tools import astra_deribit_cooldown_v1 as cd_mod
+
+    primary_cd = tmp_path / "isolated_cd.json"
+    ro_cd = tmp_path / "prod_ro_cd.json"
+    now_ms = int(fx["clk"][0])
+    cd_mod.record_cooldown(ro_cd, cooldown_until_ms=now_ms + 15_000, source="prod", now_ms=now_ms)
+    monkeypatch.setenv(cd_mod.ENV_KEY, str(primary_cd))
+    monkeypatch.setenv(cd_mod.READONLY_ENV_KEY, str(ro_cd))
+    active = cd_mod.read_cooldown(now_ms=now_ms)
+    assert active is not None and active["remaining_ms"] == 15_000
+    assert not primary_cd.exists()
+    monkeypatch.delenv(cd_mod.ENV_KEY, raising=False)
+    monkeypatch.delenv(cd_mod.READONLY_ENV_KEY, raising=False)
+
+    # 3) _player_audit survives LockedCandidateError; audit_record prefers PENDING_LOCK & tolerates corrupt event
+    from tools import astra_player_tracking_v13 as tr_mod
+    from tools import astra_workbench_v20 as wb_mod
+    import urllib.request
+
+    hand_dir = fx["trial_root"] / "shadow_dossiers" / "dossiers" / rec["dossier_id"] / "hands" / rec["hand_id"]
+    ep_id = rec["link"]["dossier_episode_id"]
+    ev_dir = hand_dir.parent.parent / "episodes" / ep_id / "events"
+    ev_dir.mkdir(parents=True, exist_ok=True)
+    (ev_dir / "corrupt.json").write_text("{bad", encoding="utf-8")
+    aud_detail = tr_mod.audit_record(hand_dir, fx["clk"][0], {ep_id: "ACTIVE"}, detail=True)
+    assert aud_detail["state"] == "Accept"
+
+    # Also verify active PENDING_LOCK takes precedence over earlier non-terminal LOCK_BLOCKED note
+    from tools import astra_player_dossier_v1 as dos_mod
+    pending_hand = dos_mod.Dossiers(fx["trial_root"] / "pending_precedence", clock=lambda: fx["clk"][0])
+    h_pend = pending_hand.expect(fx["exp_ms"], "AD_HOC", reference="pend-precedence")
+    (h_pend / "tracking").mkdir(parents=True, exist_ok=True)
+    (h_pend / "issuance").mkdir(parents=True, exist_ok=True)
+    dos_mod.write(h_pend / "issuance" / "lock_note.json", dos_mod.encode({"state": "LOCK_BLOCKED", "recorded_at_ms": fx["clk"][0] - 5000}))
+    dos_mod.write(h_pend / "tracking" / "pending_lock.json", dos_mod.encode({"state": "PENDING_LOCK", "deadline_ms": fx["clk"][0] + 60_000}))
+    aud_pend = tr_mod.audit_record(h_pend, fx["clk"][0], {})
+    assert aud_pend["tracking_state"] == "PENDING_LOCK"
+
+    def raise_locked_err():
+        raise wb_mod.locked_store.LockedCandidateError("corrupt_index", "corrupt")
+
+    monkeypatch.setattr(fx["wb"].locked_candidates, "list", raise_locked_err)
+    with serving(fx["wb"]) as wb_url:
+        req = urllib.request.Request(
+            f"{wb_url}/api/workbench/player-audit",
+            headers={"Authorization": f"Bearer {fx['wb'].config.server_token}"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            assert resp.status == 200
+            body = json.loads(resp.read().decode("utf-8"))
+            assert any(h["hand_id"] == rec["hand_id"] for h in body["hands"])
+
+    # 4) _prepare_shadow_deal avoids redundant refresh() when refresh_expiry_gamma already unblocks SOURCE_READY
+    fx_nd = _setup_manual_trial_env(tmp_path / "nodup", monkeypatch)
+    fx_nd["wb"].refresh(now_ms=fx_nd["clk"][0], record_daily=False)
+    calls_refresh: list[int] = []
+    orig_eg = fx_nd["wb"]._expiry_gamma
+    monkeypatch.setattr(fx_nd["wb"], "refresh", lambda **_kw: calls_refresh.append(1) or {})
+    monkeypatch.setattr(fx_nd["wb"].config, "expiry_gamma_enabled", True)
+    monkeypatch.setattr(fx_nd["wb"], "refresh_expiry_gamma", lambda **_kw: setattr(fx_nd["wb"], "_expiry_gamma", orig_eg) or orig_eg)
+    fx_nd["wb"]._expiry_gamma = None
+    prep_no_dup = fx_nd["wb"].shadow_tracking(
+        "prepare_deal",
+        {"target_expiry_ms": fx_nd["exp_ms"], "allow_refresh": True, "input_profile": "p0_strict@1"},
+    )
+    assert prep_no_dup["readiness_status"] == "SOURCE_READY"
+    assert calls_refresh == []

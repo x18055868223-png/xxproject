@@ -921,14 +921,13 @@ def test_empirical_citation_and_format_flaws_vs_substantive_bad_reply_and_real_r
         assert att_loss["raw_sha256"] == dossier.sha(expected_raw_bytes)
         cv_loss = att_loss["contract_validation"]
         assert cv_loss["status"] == "PASSED"
-        assert any("j1_labeled_section_clause_prefix_expanded:put" in w for w in cv_loss["warnings"])
-        assert any("j1_labeled_section_clause_prefix_expanded:condition_plan.confirmation_excerpt" in w for w in cv_loss["warnings"])
+        assert any("excerpt_resolved_from_prose:put" in w for w in cv_loss["warnings"])
+        assert any("excerpt_resolved_from_prose:condition_plan.confirmation_excerpt" in w for w in cv_loss["warnings"])
         assert any("annotation_closing_tag_repaired" in w for w in cv_loss["warnings"])
         assert any("annotation_json_trailing_comma_repaired" in w for w in cv_loss["warnings"])
 
-        # 2) Valid Accept prose + wrong-section / duplicate `confirmation_excerpt` pointer (`hand_89df` pattern)
-        #    -> Attempt 1 fails closed (`CONTRACT_VALIDATION_FAILED`, `recoverable_citation_only=True`),
-        #       regenerates ONCE on primary model (never switching to standby!), Attempt 2 locks cleanly!
+        # 2) Valid Accept prose + wrong-section / duplicate `confirmation_excerpt` pointer (`hand_89df` / `hand_4924` pattern)
+        #    -> Deterministically resolved from the single unambiguous M prose section on Attempt 1 (1 LLM call -> SHADOW_LOCK_CREATED!)
     clk_89df = [slot_0 + 2 * M]
     wb_89df, arch_89df, dos_89df, _, _, exp_89df, _, sync_89df = _setup_nov26_workbench_and_archive(
         tmp_path / "item2_89df_env", monkeypatch, clock=clk_89df,
@@ -950,14 +949,13 @@ def test_empirical_citation_and_format_flaws_vs_substantive_bad_reply_and_real_r
         ann_89df = json.loads(json.dumps(ann_clean))
         ann_89df["condition_plan"]["confirmation_excerpt"] = ann_clean["comparison"]
         text_89df_pointer_bug = pub_clean + "<ANNOTATION_JSON>\n" + json.dumps(ann_89df, ensure_ascii=False) + "\n</ANNOTATION_JSON>"
-        h_89df = d_89df.expect(exp_89df, "AD_HOC", reference="item2-89df-wrong-section-regen")
+        h_89df = d_89df.expect(exp_89df, "AD_HOC", reference="item2-89df-wrong-section-in-place")
         d_89df.deal(h_89df, src_89df, input_profile="p0_strict@1")
         models_89df: list[str] = []
 
         def transport_89df(_k, model, *_a, **_kw):
             models_89df.append(model)
-            txt = text_89df_pointer_bug if len(models_89df) == 1 else clean_accept
-            return {"choices": [{"finish_reason": "stop", "message": {"content": txt}}]}
+            return {"choices": [{"finish_reason": "stop", "message": {"content": text_89df_pointer_bug}}]}
 
         cfg_89df = tracking._llm_settings({
             "api_key": "k",
@@ -970,20 +968,11 @@ def test_empirical_citation_and_format_flaws_vs_substantive_bad_reply_and_real_r
             d_89df, h_89df, svc_89df, cfg_89df,
             prompt_version=review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION, input_profile="p0_strict@1",
         )
-        assert r_89df_1["status"] == "PARSE_FAILED"
+        assert r_89df_1["status"] == "VALID" and r_89df_1["decision"] == "Accept"
+        assert r_89df_1["link"]["state"] == "SHADOW_LOCK_CREATED"
+        assert models_89df == ["deepseek-v4-pro"]  # zero redundant LLM retries!
         att_89df_1 = dossier.read(dossier.attempts(h_89df)[0])
-        assert att_89df_1["error_code"] == "CONTRACT_VALIDATION_FAILED"
-        assert att_89df_1["contract_validation"]["recoverable_citation_only"] is True
-        clk_89df[0] += 5_000
-        sync_89df()
-        wb_89df.refresh(now_ms=clk_89df[0], record_daily=False)
-        r_89df_2 = tracking._deal_hand(
-            d_89df, h_89df, svc_89df, cfg_89df,
-            prompt_version=review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION, input_profile="p0_strict@1",
-        )
-        assert r_89df_2["status"] == "VALID" and r_89df_2["decision"] == "Accept"
-        assert r_89df_2["link"]["state"] == "SHADOW_LOCK_CREATED"
-        assert models_89df == ["deepseek-v4-pro", "deepseek-v4-pro"]  # stayed on primary model!
+        assert any("excerpt_resolved_from_prose:condition_plan.confirmation_excerpt" in w for w in att_89df_1["contract_validation"]["warnings"])
 
     # 3) Substantively bad replies MUST stay hard-blocked with ZERO regeneration (`len(calls) == 1`):
     #    (i) `hand_a050` substantive M1 error (`严格进入Put责任区58,000至60,000美元` finite interval) even with clause prefix;
