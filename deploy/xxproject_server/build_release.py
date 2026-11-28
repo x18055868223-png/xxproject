@@ -29,6 +29,7 @@ ENTRYPOINT_ROOTS = [
     "astra_research_archive_v1",
     "astra_player_tracking_v13",
     "astra_player_dossier_v1",
+    "astra_player_manual_trial_v1",
     "astra_execution_coordinator_v1",
     "astra_exec_testnet_verify_v1",
     "materialize_signal_cards",
