@@ -3239,8 +3239,8 @@ def test_live_mainnet_mode_guards_main_account_binding_and_readonly_dcod(tmp_pat
                 mode="LIVE", env_tag="live", subaccount_id="", store=st, adapter=adp_sim, status_path=tmp_path / "l2.json"
             )
 
-        dcod_state = {"enabled": True}
-        adp_sim.get_cancel_on_disconnect = lambda: {"enabled": dcod_state["enabled"], "scope": "account"}  # type: ignore[attr-defined]
+        dcod_state = {"enabled": True, "scope": "account"}
+        adp_sim.get_cancel_on_disconnect = lambda: dcod_state  # type: ignore[attr-defined]
         dos = tmp_path / "dos_live_dcod"
         dos.mkdir()
         _build_p5_dossier(dos, decided_at_ms=venue.server_time_ms - 5_000)
@@ -3267,8 +3267,35 @@ def test_live_mainnet_mode_guards_main_account_binding_and_readonly_dcod(tmp_pat
         assert "dcod_enabled_on_account_requires_manual_disable" in str(st_blk.get("last_error") or "")
         assert st.get_active_episode() is None
 
+        for incomplete in (
+            {},
+            {"scope": "account"},
+            {"enabled": False},
+            {"scope": "connection", "enabled": False},
+            {"scope": "account", "enabled": 0},
+            {"scope": "account", "enabled": "false"},
+        ):
+            dcod_state = incomplete
+            venue.advance_time(6_000)
+            coord.run_tick(now_ms=venue.server_time_ms)
+            assert coord._dcod_confirmed is False
+            assert coord._dcod_error == "dcod_unconfirmed:invalid_account_setting"
+            assert st.get_active_episode() is None
+
+        adp_dcod_nonmap = coord_mod.DeribitRestAdapter(
+            mode="LIVE",
+            base_url="https://www.deribit.com",
+            client_id="cid",
+            client_secret="csec",
+            subaccount_id="900001",
+            allow_main_account=True,
+            http_fn=lambda m, p, **kw: False if m == "private/get_cancel_on_disconnect" else {},
+        )
+        with pytest.raises(coord_mod.VenueTransportError, match="dcod_invalid_response"):
+            adp_dcod_nonmap.get_cancel_on_disconnect()
+
         # Once account DCOD is manually disabled (enabled=False), LIVE confirms read-only and admits cleanly
-        dcod_state["enabled"] = False
+        dcod_state = {"enabled": False, "scope": "account"}
         venue.advance_time(6_000)
         _refresh_books(venue, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P")
         coord.run_tick(now_ms=venue.server_time_ms)
@@ -3397,4 +3424,457 @@ def test_live_mainnet_write_paths_recovery_and_takeover(tmp_path: Path, monkeypa
             st2_re.close()
         except Exception:
             pass
+
+
+def _make_live_spm_wire_adapter(
+    *,
+    balance_btc: Decimal,
+    acct_type: str = "main",
+    margin_model: str = "segregated_pm",
+    portfolio_margining_enabled: bool = True,
+    allow_main_account: bool = True,
+    mode: str = "LIVE",
+    base_url: str = "https://www.deribit.com",
+    subaccount_id: str = "900001",
+) -> tuple[sim.SimulatedDeribitVenue, coord_mod.DeribitRestAdapter, dict[str, Any]]:
+    t0 = int(time.time() * 1000)
+    exp_ms = t0 + 18_000_000
+    venue = sim.SimulatedDeribitVenue(
+        initial_time_ms=t0,
+        initial_balance_btc=balance_btc,
+        subaccount_id=subaccount_id,
+        portfolio_margining_enabled=portfolio_margining_enabled,
+        margin_model=margin_model,
+    )
+    venue.set_spot_usd("59389.71")
+    for inst_name, strike in (("BTC-29NOV26-58500-P", 58500), ("BTC-29NOV26-56500-P", 56500)):
+        venue.add_option_instrument(
+            inst_name,
+            strike_usd=strike,
+            option_type="put",
+            expiry_ms=exp_ms,
+            settlement_period="day",
+            tick_size="0.0001",
+            min_trade_amount="0.1",
+            tick_size_steps=(("0.005", "0.0005"),),
+        )
+
+    def _set_real_books() -> None:
+        venue.set_book(
+            "BTC-29NOV26-58500-P",
+            bid="0.0016", bid_size="27.7", ask="0.0020", ask_size="4.9",
+            mark_price="0.0018", min_price="0.0001", max_price="0.028",
+        )
+        venue.set_book(
+            "BTC-29NOV26-56500-P",
+            bid="0.0003", bid_size="14.1", ask="0.0004", ask_size="5.7",
+            mark_price="0.0003", min_price="0.0001", max_price="0.0175",
+        )
+
+    _set_real_books()
+    wire_state: dict[str, Any] = {
+        "acct_type": acct_type,
+        "margin_model": margin_model,
+        "pm_enabled": portfolio_margining_enabled,
+        "avail_override": None,
+        "ep_fill_mode": "normal",  # normal | unfilled | partial_005
+        "refresh_books": _set_real_books,
+    }
+
+    def _order_to_wire(o: sim.OracleExchangeOrder | sim.OracleOrder) -> dict[str, Any]:
+        return {
+            "order_id": o.order_id,
+            "label": o.label,
+            "instrument_name": o.instrument_name,
+            "direction": o.direction,
+            "amount": float(o.amount),
+            "filled_amount": float(o.filled_amount),
+            "price": float(o.price) if o.price is not None else 0.0,
+            "average_price": float(o.average_price) if o.average_price is not None else None,
+            "order_state": o.order_state,
+            "time_in_force": o.time_in_force,
+            "reduce_only": o.reduce_only,
+            "post_only": o.post_only,
+            "creation_timestamp": int(getattr(o, "creation_timestamp_ms", getattr(o, "created_at_ms", t0))),
+            "last_update_timestamp": int(getattr(o, "last_update_timestamp_ms", getattr(o, "last_update_ms", t0))),
+        }
+
+    def _sync_pm_margins() -> tuple[Decimal, Decimal, Decimal]:
+        pos_map = {p.instrument_name: D(p.size) for p in venue.get_positions()}
+        short_sz = pos_map.get("BTC-29NOV26-58500-P", ZERO)
+        long_sz = pos_map.get("BTC-29NOV26-56500-P", ZERO)
+        if short_sz < ZERO and long_sz > ZERO:
+            im, mm = D("0.00384912"), D("0.00307930")
+        elif long_sz > ZERO and short_sz == ZERO:
+            im, mm = D("0.00003441"), D("0.00002753")
+        elif short_sz < ZERO and long_sz == ZERO:
+            im, mm = D("0.01446991"), D("0.01157593")
+        else:
+            im, mm = ZERO, ZERO
+        eq = D(venue.cash_balance_btc) + short_sz * D("0.0018") + long_sz * D("0.0003")
+        avail = wire_state["avail_override"] if wire_state["avail_override"] is not None else max(ZERO, eq - im)
+        return im, mm, avail
+
+    def _http(method: str, params: dict[str, Any], *, private: bool = False) -> Any:
+        del private
+        if method == "public/get_time":
+            return venue.get_server_time()
+        if method == "public/get_index_price":
+            return {"index_price": float(venue.spot_usd)}
+        if method == "public/get_instrument":
+            inst = str(params["instrument_name"])
+            sp = venue._specs[inst]
+            return {
+                "instrument_name": sp.instrument_name,
+                "kind": sp.kind,
+                "settlement_period": sp.settlement_period,
+                "strike": float(sp.strike_usd or 0),
+                "option_type": sp.option_type,
+                "expiration_timestamp": sp.expiry_ms,
+                "tick_size": float(sp.tick_size),
+                "tick_size_steps": [{"above_price": float(x.above_price), "tick_size": float(x.tick_size)} for x in sp.tick_size_steps],
+                "min_trade_amount": float(sp.min_trade_amount),
+                "maker_commission": float(sp.maker_commission),
+                "taker_commission": float(sp.taker_commission),
+            }
+        if method == "public/get_order_book":
+            return venue.get_order_book(str(params["instrument_name"]), depth=int(params.get("depth", 5)))
+        if method == "private/get_cancel_on_disconnect":
+            return {"enabled": False, "scope": "account"}
+        if method == "private/disable_cancel_on_disconnect":
+            return {"ok": True}
+        if method == "private/get_account_summary":
+            im, mm, avail = _sync_pm_margins()
+            acct = venue.get_account_summary()
+            out: dict[str, Any] = {
+                "balance": float(acct["balance"]),
+                "equity": float(D(venue.cash_balance_btc) + sum(D(p.size) * D(p.mark_price or 0) for p in venue.get_positions())),
+                "available_funds": float(avail),
+                "initial_margin": float(im),
+                "maintenance_margin": float(mm),
+                "margin_model": wire_state["margin_model"],
+                "portfolio_margining_enabled": bool(wire_state["pm_enabled"]),
+                "index_price": float(venue.spot_usd),
+            }
+            if params.get("extended"):
+                out.update({"id": int(subaccount_id), "username": "acct-main-sim", "type": wire_state["acct_type"]})
+            return out
+        if method == "private/get_open_orders_by_currency":
+            return [_order_to_wire(o) for o in venue.get_open_orders()]
+        if method == "private/get_positions":
+            return [
+                {
+                    "instrument_name": p.instrument_name,
+                    "kind": p.kind,
+                    "size": float(p.size),
+                    "average_price": float(p.average_price) if p.average_price is not None else None,
+                    "mark_price": float(p.mark_price) if p.mark_price is not None else None,
+                    "index_price": float(venue.spot_usd),
+                }
+                for p in venue.get_positions()
+            ]
+        if method == "private/get_user_trades_by_currency_and_time":
+            trades = venue.build_facts("BTC-29NOV26-58500-P", "BTC-29NOV26-56500-P", follow_pagination=True).recent_trades
+            return {
+                "trades": [
+                    {
+                        "trade_id": t.trade_id,
+                        "order_id": t.order_id,
+                        "label": t.label,
+                        "instrument_name": t.instrument_name,
+                        "direction": t.direction,
+                        "amount": float(t.amount),
+                        "price": float(t.price),
+                        "fee": float(t.fee),
+                        "fee_currency": t.fee_currency,
+                        "timestamp": t.timestamp_ms,
+                        "liquidity": t.liquidity,
+                    }
+                    for t in trades
+                ],
+                "has_more": False,
+            }
+        if method == "private/get_transaction_log":
+            txs = venue.build_facts("BTC-29NOV26-58500-P", "BTC-29NOV26-56500-P", follow_pagination=True).tx_logs
+            return {
+                "logs": [
+                    {
+                        "id": x.id,
+                        "type": x.type,
+                        "instrument_name": x.instrument_name,
+                        "timestamp": x.timestamp_ms,
+                        "amount": float(x.amount),
+                        "price": float(x.price) if x.price is not None else None,
+                        "cashflow": float(x.cashflow),
+                        "change": float(x.change),
+                        "commission": float(x.commission),
+                        "currency": x.currency,
+                        "trade_id": x.trade_id,
+                        "order_id": x.order_id,
+                        "settlement_price": float(x.settlement_price) if x.settlement_price is not None else None,
+                        "info": dict(x.info),
+                    }
+                    for x in txs
+                ],
+                "continuation": None,
+            }
+        if method in {"private/buy", "private/sell"}:
+            direction = "buy" if method == "private/buy" else "sell"
+            inst = str(params["instrument_name"])
+            amt = D(str(params["amount"]))
+            px = D(str(params["price"]))
+            lbl = str(params["label"])
+            if ":EP:" in lbl and wire_state["ep_fill_mode"] == "unfilled":
+                venue.set_book(inst, bid="0.0001", bid_size="5.0", ask="0.0050", ask_size="5.0", mark_price="0.0003", min_price="0.0001", max_price="0.0175")
+            elif ":EP:" in lbl and wire_state["ep_fill_mode"] == "partial_005":
+                venue.set_book(inst, bid="0.0003", bid_size="5.0", ask="0.0004", ask_size="0.05", mark_price="0.0003", min_price="0.0001", max_price="0.0175")
+            tif_rev = {"good_til_cancelled": "GTC", "immediate_or_cancel": "IOC", "fill_or_kill": "FOK"}
+            oo = venue.submit_order(
+                inst,
+                direction,
+                amt,
+                px,
+                label=lbl,
+                time_in_force=tif_rev.get(str(params["time_in_force"]), "IOC"),
+                reduce_only=bool(params.get("reduce_only", False)),
+                post_only=bool(params.get("post_only", False)),
+                reject_post_only=bool(params.get("reject_post_only", False)),
+                valid_until=int(params["valid_until"]),
+            )
+            tr_list = [
+                {
+                    "trade_id": t.trade_id, "order_id": t.order_id, "label": t.label,
+                    "instrument_name": t.instrument_name, "direction": t.direction,
+                    "amount": float(t.amount), "price": float(t.price), "fee": float(t.fee),
+                    "fee_currency": t.fee_currency, "timestamp": t.timestamp_ms, "liquidity": t.liquidity,
+                }
+                for t in venue.build_facts("BTC-29NOV26-58500-P", "BTC-29NOV26-56500-P", follow_pagination=True).recent_trades
+                if t.order_id == oo.order_id
+            ]
+            return {"order": _order_to_wire(oo), "trades": tr_list}
+        if method == "private/cancel_by_label":
+            return venue.cancel_by_label(str(params["label"]))
+        if method == "private/get_order_state_by_label":
+            return [_order_to_wire(o) for o in venue.get_order_state_by_label(str(params["label"]))]
+        if method == "private/get_order_state":
+            return _order_to_wire(venue.get_order_state(str(params["order_id"])))
+        if method == "private/get_order_history_by_instrument":
+            return [_order_to_wire(o) for o in venue.get_order_history_by_instrument(str(params["instrument_name"]))]
+        raise AssertionError(f"unexpected rpc {method}")
+
+    adp = coord_mod.DeribitRestAdapter(
+        mode=mode,
+        base_url=base_url,
+        client_id="cid",
+        client_secret="csec",
+        subaccount_id=subaccount_id,
+        allow_main_account=allow_main_account,
+        http_fn=_http,
+    )
+    return venue, adp, wire_state
+
+
+def test_live_mainnet_spm_single_trial_dynamic_mreq_full_cycle_and_guards(tmp_path: Path):
+    def _build_nov29_dossier(dos_dir: Path, venue: sim.SimulatedDeribitVenue) -> None:
+        dos_dir.mkdir(parents=True, exist_ok=True)
+        _build_p5_dossier(
+            dos_dir,
+            dossier_id="Deribit_BTC_20261129T080000Z",
+            short_inst="BTC-29NOV26-58500-P",
+            long_inst="BTC-29NOV26-56500-P",
+            short_strike=58500,
+            long_strike=56500,
+            expiry_ms=venue._specs["BTC-29NOV26-58500-P"].expiry_ms,
+            decided_at_ms=venue.server_time_ms - 5_000,
+            credit_btc=D("0.00095"),
+        )
+
+    # 1. Positive full cycle at 0.0065 BTC on designated main-account S:PM (29NOV26 real quotes)
+    v_ok, adp_ok, ws_ok = _make_live_spm_wire_adapter(balance_btc=D("0.0065"))
+    dos_ok = tmp_path / "dos_ok"
+    _build_nov29_dossier(dos_ok, v_ok)
+    st_ok = store.ExecutionStore(tmp_path / "ok.sqlite3")
+    try:
+        c_ok = coord_mod.ExecutionCoordinator(
+            mode="LIVE",
+            env_tag="live",
+            subaccount_id="900001",
+            allow_main_account=True,
+            store=st_ok,
+            adapter=adp_ok,
+            status_path=tmp_path / "ok_st.json",
+            dossier_root=dos_ok,
+        )
+        c_ok.startup_init(now_ms=v_ok.server_time_ms)
+        st_idle = c_ok.run_tick(now_ms=v_ok.server_time_ms)
+        assert st_idle["account"]["candidate_min_cash_fixed_floor_applied"] is False
+        assert st_idle["account"]["candidate_min_cash_btc"] is None
+
+        c_ok.handle_capital_policy(
+            {"entry_armed": True, "budget_cap_btc": "0.0065", "max_qty_btc": "0.1", "operator": "op"},
+            now_ms=v_ok.server_time_ms,
+            run_tick_after=False,
+        )
+        ws_ok["refresh_books"]()
+        st_tp = c_ok.run_tick(now_ms=v_ok.server_time_ms)
+        ep_ok = st_ok.get_latest_episode()
+        assert ep_ok is not None and ep_ok.phase == contracts.LifecyclePhase.TP_MANAGED
+        assert ep_ok.margin_model_at_entry == "segregated_pm"
+        assert st_tp["account"]["candidate_min_cash_fixed_floor_applied"] is False
+        assert st_tp["account"]["candidate_min_cash_btc"] == "0.00601355"
+        cmds_entry = st_ok.get_commands(ep_ok.episode_id)
+        assert [c.purpose for c in cmds_entry] == ["EP", "ES", "TP"]
+        assert cmds_entry[0].filled_amount == D("0.1") and cmds_entry[1].filled_amount == D("0.1")
+
+        # Trigger AI_REVOKE -> cancels TP -> buys back ES -> sells LX -> positions flat & settled
+        _write_p5_event(
+            dos_ok,
+            kind="AI_REVOKE",
+            dossier_id="Deribit_BTC_20261129T080000Z",
+            ts_ms=v_ok.server_time_ms,
+        )
+        for _ in range(5):
+            v_ok.set_server_time(int(time.time() * 1000))
+            ws_ok["refresh_books"]()
+            c_ok.run_tick(now_ms=v_ok.server_time_ms)
+        ep_end = st_ok.get_episode(ep_ok.episode_id)
+        assert ep_end is not None and ep_end.phase == contracts.LifecyclePhase.CASHFLOW_SETTLED
+        assert ep_end.terminal_outcome == "EARLY_FLAT_SETTLED"
+        assert ep_end.short_liability_cleared is True and ep_end.inventory_cleared is True
+        assert v_ok.get_positions() == ()
+        assert [c.purpose for c in st_ok.get_commands(ep_ok.episode_id)] == ["EP", "ES", "TP", "RX", "LX"]
+    finally:
+        st_ok.close()
+
+    # 2a. Negative 1: Dynamic M_req insufficient (0.0055 < 0.00606980 -> rejected at ADMIT, 0 orders)
+    v_low, adp_low, _ = _make_live_spm_wire_adapter(balance_btc=D("0.0055"))
+    dos_low = tmp_path / "dos_low"
+    _build_nov29_dossier(dos_low, v_low)
+    st_low = store.ExecutionStore(tmp_path / "low.sqlite3")
+    try:
+        c_low = coord_mod.ExecutionCoordinator(
+            mode="LIVE", env_tag="live", subaccount_id="900001", allow_main_account=True,
+            store=st_low, adapter=adp_low, status_path=tmp_path / "low_st.json", dossier_root=dos_low,
+        )
+        c_low.startup_init(now_ms=v_low.server_time_ms)
+        c_low.handle_capital_policy(
+            {"entry_armed": True, "budget_cap_btc": "0.0055", "max_qty_btc": "0.1", "operator": "op"},
+            now_ms=v_low.server_time_ms,
+            run_tick_after=False,
+        )
+        st_low_tick = c_low.run_tick(now_ms=v_low.server_time_ms)
+        assert c_low._last_reject_reason == "AVAILABLE_FUNDS_BELOW_INITIAL_MARGIN_REQ"
+        assert st_low.get_active_episode() is None
+        assert st_low_tick["account"]["candidate_min_cash_fixed_floor_applied"] is False
+        assert st_low_tick["account"]["candidate_min_cash_btc"] == "0.0060698"
+        assert len(v_low.export_raw_trades()) == 0 and len(v_low.get_open_orders()) == 0
+    finally:
+        st_low.close()
+
+    # 2b. Scope boundary: outside controlled scope (subaccount / cross_pm / qty=0.2 / TESTNET) retains fixed floor!
+    for case_name, kw, max_qty in (
+        ("subaccount", {"acct_type": "subaccount", "allow_main_account": False}, "0.1"),
+        ("cross_pm", {"margin_model": "cross_pm"}, "0.1"),
+        ("qty_0_2", {}, "0.2"),
+        ("testnet", {"mode": "TESTNET", "base_url": "https://test.deribit.com", "acct_type": "subaccount", "allow_main_account": False}, "0.1"),
+    ):
+        sub_dir = tmp_path / f"scope_{case_name}"
+        sub_dir.mkdir()
+        bal_s = D("0.015") if max_qty == "0.2" else D("0.0065")
+        v_s, adp_s, _ = _make_live_spm_wire_adapter(balance_btc=bal_s, **kw)
+        dos_s = sub_dir / "dos"
+        _build_nov29_dossier(dos_s, v_s)
+        st_s = store.ExecutionStore(sub_dir / "s.sqlite3")
+        try:
+            mode_s = str(kw.get("mode", "LIVE"))
+            cfg_s = contracts.ExecConfig(initial_qty_btc=D(max_qty), max_entry_slice_btc=D(max_qty))
+            c_s = coord_mod.ExecutionCoordinator(
+                mode=mode_s,
+                env_tag="tn" if mode_s == "TESTNET" else "live",
+                subaccount_id="900001",
+                allow_main_account=bool(kw.get("allow_main_account", True)),
+                store=st_s,
+                adapter=adp_s,
+                status_path=sub_dir / "st.json",
+                dossier_root=dos_s,
+                config=cfg_s,
+            )
+            c_s.startup_init(now_ms=v_s.server_time_ms)
+            c_s.handle_capital_policy(
+                {"entry_armed": True, "budget_cap_btc": str(bal_s), "max_qty_btc": max_qty, "operator": "op"},
+                now_ms=v_s.server_time_ms,
+                run_tick_after=False,
+            )
+            tick_s = c_s.run_tick(now_ms=v_s.server_time_ms)
+            assert c_s._last_reject_reason == "BALANCE_BELOW_CANDIDATE_MIN_CASH", case_name
+            assert st_s.get_active_episode() is None, case_name
+            assert tick_s["account"]["candidate_min_cash_fixed_floor_applied"] is True, case_name
+            expected_floor = "0.03" if max_qty == "0.2" else "0.015"
+            assert tick_s["account"]["candidate_min_cash_btc"] == expected_floor, case_name
+        finally:
+            st_s.close()
+
+    # 2c. Open position still unwinds cleanly even if entry M_req / available_funds would reject new entry
+    v_ex, adp_ex, ws_ex = _make_live_spm_wire_adapter(balance_btc=D("0.0065"))
+    dos_ex = tmp_path / "dos_ex"
+    _build_nov29_dossier(dos_ex, v_ex)
+    st_ex = store.ExecutionStore(tmp_path / "ex.sqlite3")
+    try:
+        c_ex = coord_mod.ExecutionCoordinator(
+            mode="LIVE", env_tag="live", subaccount_id="900001", allow_main_account=True,
+            store=st_ex, adapter=adp_ex, status_path=tmp_path / "ex_st.json", dossier_root=dos_ex,
+        )
+        c_ex.startup_init(now_ms=v_ex.server_time_ms)
+        c_ex.handle_capital_policy(
+            {"entry_armed": True, "budget_cap_btc": "0.0065", "max_qty_btc": "0.1", "operator": "op"},
+            now_ms=v_ex.server_time_ms,
+            run_tick_after=False,
+        )
+        c_ex.run_tick(now_ms=v_ex.server_time_ms)
+        ep_ex = st_ex.get_latest_episode()
+        assert ep_ex is not None and ep_ex.phase == contracts.LifecyclePhase.TP_MANAGED
+        ws_ex["avail_override"] = D("0.0010")
+        _write_p5_event(
+            dos_ex,
+            kind="AI_REVOKE",
+            dossier_id="Deribit_BTC_20261129T080000Z",
+            ts_ms=v_ex.server_time_ms,
+        )
+        for _ in range(5):
+            v_ex.set_server_time(int(time.time() * 1000))
+            ws_ex["refresh_books"]()
+            c_ex.run_tick(now_ms=v_ex.server_time_ms)
+        assert st_ex.get_episode(ep_ex.episode_id).phase == contracts.LifecyclePhase.CASHFLOW_SETTLED  # type: ignore[union-attr]
+        assert v_ex.get_positions() == ()
+    finally:
+        st_ex.close()
+
+    # 3. Negative 2: Protection leg unfilled OR insufficient partial fill (< 0.1) -> NEVER submits ES
+    for fill_mode in ("unfilled", "partial_005"):
+        sub_p = tmp_path / f"prot_{fill_mode}"
+        sub_p.mkdir()
+        v_p, adp_p, ws_p = _make_live_spm_wire_adapter(balance_btc=D("0.0065"))
+        ws_p["ep_fill_mode"] = fill_mode
+        dos_p = sub_p / "dos"
+        _build_nov29_dossier(dos_p, v_p)
+        st_p = store.ExecutionStore(sub_p / "p.sqlite3")
+        try:
+            c_p = coord_mod.ExecutionCoordinator(
+                mode="LIVE", env_tag="live", subaccount_id="900001", allow_main_account=True,
+                store=st_p, adapter=adp_p, status_path=sub_p / "p_st.json", dossier_root=dos_p,
+            )
+            c_p.startup_init(now_ms=v_p.server_time_ms)
+            c_p.handle_capital_policy(
+                {"entry_armed": True, "budget_cap_btc": "0.0065", "max_qty_btc": "0.1", "operator": "op"},
+                now_ms=v_p.server_time_ms,
+                run_tick_after=False,
+            )
+            c_p.run_tick(now_ms=v_p.server_time_ms)
+            ep_p = st_p.get_latest_episode()
+            assert ep_p is not None
+            cmds_p = st_p.get_commands(ep_p.episode_id)
+            assert len(cmds_p) >= 1 and all(c.purpose == "EP" for c in cmds_p), fill_mode
+            assert all(p.size >= ZERO for p in v_p.get_positions()), fill_mode
+        finally:
+            st_p.close()
 

@@ -49,14 +49,17 @@ if __package__:
         VenueTrade,
         ceil_1e8,
         compute_contract_hash,
+        compute_margin_and_cash_requirements,
         conservative_split_buy_outlay_btc,
         dataclass_to_jsonable,
         dec_str,
         facts_clock_skew_ms,
+        is_designated_mainnet_spm_single_episode_scope,
         make_order_label,
         matches_episode_future,
         opt_dec,
         quant_qty,
+        short_mark_from_book,
         sweep_ask_price,
     )
     from .astra_exec_policy_v1 import (
@@ -93,14 +96,17 @@ else:
         VenueTrade,
         ceil_1e8,
         compute_contract_hash,
+        compute_margin_and_cash_requirements,
         conservative_split_buy_outlay_btc,
         dataclass_to_jsonable,
         dec_str,
         facts_clock_skew_ms,
+        is_designated_mainnet_spm_single_episode_scope,
         make_order_label,
         matches_episode_future,
         opt_dec,
         quant_qty,
+        short_mark_from_book,
         sweep_ask_price,
     )
     from astra_exec_policy_v1 import (
@@ -618,9 +624,9 @@ class DeribitRestAdapter:
         if not self._has_private_auth():
             raise VenueTransportError("credentials_missing", "Deribit API credentials not configured")
         res = self._raw_call("private/get_cancel_on_disconnect", {"scope": "account"}, private=True, is_write=False)
-        if isinstance(res, Mapping):
-            return dict(res)
-        return {"enabled": bool(res), "scope": "account"}
+        if not isinstance(res, Mapping):
+            raise VenueTransportError("dcod_invalid_response", "Expected an account setting object")
+        return dict(res)
 
     def disable_cancel_on_disconnect(self) -> bool:
         if not self._allow_private_writes():
@@ -894,6 +900,7 @@ class DeribitRestAdapter:
                 balance_btc=ZERO,
                 portfolio_margining_enabled=pm_enabled,
                 margin_model=margin_model,
+                account_type=acct_type,
                 trades_complete=False,
                 positions_complete=False,
                 clock_rtt_ok=self._last_clock_rtt_ok,
@@ -928,6 +935,7 @@ class DeribitRestAdapter:
                     balance_btc=ZERO,
                     portfolio_margining_enabled=pm_enabled,
                     margin_model=margin_model,
+                    account_type=acct_type,
                     trades_complete=False,
                     positions_complete=False,
                     clock_rtt_ok=self._last_clock_rtt_ok,
@@ -1063,6 +1071,7 @@ class DeribitRestAdapter:
             balance_btc=balance_btc,
             portfolio_margining_enabled=pm_enabled,
             margin_model=margin_model,
+            account_type=acct_type,
             trades_complete=trades_complete,
             positions_complete=True,
             clock_rtt_ok=self._last_clock_rtt_ok,
@@ -1636,6 +1645,7 @@ class ExecutionCoordinator:
         mode: str = "SHADOW_ONLY",
         env_tag: str = "tn",
         subaccount_id: str = "",
+        allow_main_account: bool | None = None,
         store: ExecutionStore,
         adapter: ExchangeAdapter,
         status_path: Path,
@@ -1656,6 +1666,9 @@ class ExecutionCoordinator:
         self.mode = mode
         self.env_tag = env_tag
         self.subaccount_id = subaccount_id
+        self.allow_main_account: bool = bool(
+            allow_main_account if allow_main_account is not None else getattr(adapter, "allow_main_account", False)
+        )
         self.store = store
         self.adapter = adapter
         self.status_path = Path(status_path)
@@ -1677,6 +1690,7 @@ class ExecutionCoordinator:
         self._last_facts: ExchangeFacts | None = None
         self._last_error: str | None = None
         self._last_reject_reason: str | None = None
+        self._last_evaluated_min_cash_btc: Decimal | None = None
         self._rate_limited_until_ms: int | None = None
         self._backoff_step: int = 0
         self._last_venue_poll_ms: int = 0
@@ -1741,8 +1755,11 @@ class ExecutionCoordinator:
                     self._last_error = self._dcod_error
                     return
                 dcod = self.adapter.get_cancel_on_disconnect()
-                enabled = bool(dcod.get("enabled")) if isinstance(dcod, Mapping) else bool(dcod)
-                if not enabled:
+                if not isinstance(dcod, Mapping) or dcod.get("scope") != "account" or type(dcod.get("enabled")) is not bool:
+                    self._dcod_confirmed = False
+                    self._dcod_error = "dcod_unconfirmed:invalid_account_setting"
+                    self._last_error = self._dcod_error
+                elif dcod["enabled"] is False:
                     self._dcod_confirmed = True
                     self._dcod_error = None
                 else:
@@ -2327,6 +2344,7 @@ class ExecutionCoordinator:
         synthetic_clock: bool = True,
     ) -> tuple[EpisodeState | None, ExchangeFacts | None]:
         """Automatically admit a fresh, valid P5 Accept via unified check_new_exposure_permission before & after slow query."""
+        self._last_evaluated_min_cash_btc = None
         writes_ok = self._writes_currently_allowed(from_control=from_control)
         if not writes_ok:
             return None, None
@@ -2454,6 +2472,31 @@ class ExecutionCoordinator:
                 created_at_ms=t_post,
                 target_qty_btc=qty,
             )
+            apply_fixed = not is_designated_mainnet_spm_single_episode_scope(
+                mode=self.mode,
+                subaccount_id=self.subaccount_id,
+                allow_main_account=self.allow_main_account,
+                facts=facts,
+                target_qty_btc=qty,
+                max_qty_btc=auth_post.max_qty_btc,
+                config=self.config,
+            )
+            if facts.spot_usd > ZERO:
+                _, _, eff_min_cash = compute_margin_and_cash_requirements(
+                    side=temp_ep.side,
+                    short_strike_usd=temp_ep.short_strike_usd,
+                    long_strike_usd=temp_ep.long_strike_usd,
+                    spot_usd=facts.spot_usd,
+                    qty_btc=qty,
+                    unpaid_prot_cost_btc=unpaid_prot_est,
+                    short_mark_btc=short_mark_from_book(facts.short_book),
+                    portfolio_margining_enabled=facts.portfolio_margining_enabled,
+                    put_stress_spot_factor=self.config.put_stress_spot_factor,
+                    candidate_min_cash_pm_per_btc=self.config.candidate_min_cash_pm_per_btc,
+                    candidate_min_cash_sm_per_btc=self.config.candidate_min_cash_sm_per_btc,
+                    apply_fixed_candidate_min_cash=apply_fixed,
+                )
+                self._last_evaluated_min_cash_btc = eff_min_cash
             gate_ok, gate_reason = _entry_capital_and_margin_ok(
                 episode=temp_ep,
                 facts=facts,
@@ -2463,6 +2506,7 @@ class ExecutionCoordinator:
                 unpaid_prot_cost_btc=unpaid_prot_est,
                 effective_budget_btc=b_eff_post,
                 config=self.config,
+                apply_fixed_candidate_min_cash=apply_fixed,
             )
             if not gate_ok:
                 if newest_reject_reason is None:
@@ -2665,6 +2709,15 @@ class ExecutionCoordinator:
                 p5_episode_id=ep.p5_episode_id,
             )
 
+            apply_fixed_step = not is_designated_mainnet_spm_single_episode_scope(
+                mode=self.mode,
+                subaccount_id=self.subaccount_id,
+                allow_main_account=self.allow_main_account,
+                facts=facts,
+                target_qty_btc=ep.target_qty_btc,
+                max_qty_btc=auth_cur.max_qty_btc,
+                config=self.config,
+            )
             res = evaluate_step(
                 ep,
                 auth_cur,
@@ -2678,6 +2731,7 @@ class ExecutionCoordinator:
                 writes_disabled=not self.writes_permitted_by_mode(),
                 require_p5_facts=True,
                 dcod_confirmed=self._dcod_confirmed,
+                apply_fixed_candidate_min_cash=apply_fixed_step,
                 foreign_event_uids=foreign_uids,
                 foreign_order_ids=foreign_oids,
             )
@@ -2796,6 +2850,7 @@ class ExecutionCoordinator:
 
         active_block = None
         manual_takeover = False
+        prot_pos_status = ZERO
         active_ep = ep if (ep is not None and not ep.cashflow_settled) else None
         cmds_for_poll: list[ExecCommand] = self.store.get_commands(active_ep.episode_id) if active_ep is not None else []
         rec_poll_ms = self.recommended_poll_ms(active_ep, cmds_for_poll)
@@ -2844,6 +2899,7 @@ class ExecutionCoordinator:
                 if facts
                 else ZERO
             )
+            prot_pos_status = prot_pos
             pending_lx = sum((c.reserved_remaining for c in cmds if c.purpose == "LX" and c.is_open_or_unknown), ZERO)
             pending_es = sum((c.reserved_remaining for c in cmds if c.purpose == "ES" and c.is_open_or_unknown), ZERO)
             avail_prot = max(ZERO, prot_pos - pending_lx)
@@ -2972,14 +3028,60 @@ class ExecutionCoordinator:
                 if facts.maintenance_margin_btc > ZERO
                 else None
             )
-            cand_cash = ceil_1e8(
-                self.config.initial_qty_btc
-                * (
-                    self.config.candidate_min_cash_pm_per_btc
-                    if facts.portfolio_margining_enabled
-                    else self.config.candidate_min_cash_sm_per_btc
-                )
+            eff_qty = (
+                active_ep.target_qty_btc
+                if active_ep is not None
+                else min(auth.max_qty_btc, self.config.initial_qty_btc)
             )
+            apply_fixed = not is_designated_mainnet_spm_single_episode_scope(
+                mode=self.mode,
+                subaccount_id=self.subaccount_id,
+                allow_main_account=self.allow_main_account,
+                facts=facts,
+                target_qty_btc=eff_qty,
+                max_qty_btc=auth.max_qty_btc,
+                config=self.config,
+            )
+            if apply_fixed:
+                cand_cash_val: Decimal | None = ceil_1e8(
+                    self.config.initial_qty_btc
+                    * (
+                        self.config.candidate_min_cash_pm_per_btc
+                        if facts.portfolio_margining_enabled
+                        else self.config.candidate_min_cash_sm_per_btc
+                    )
+                )
+            elif active_ep is not None and facts.spot_usd > ZERO:
+                rem_prot = max(ZERO, active_ep.target_qty_btc - prot_pos_status)
+                if rem_prot <= ZERO:
+                    est_unpaid = ZERO
+                elif facts.long_spec is not None:
+                    ask_est = sweep_ask_price(facts.long_book, rem_prot) or ZERO
+                    est_unpaid = (
+                        conservative_split_buy_outlay_btc(ask_est, rem_prot, facts.long_spec)
+                        if ask_est > ZERO
+                        else ceil_1e8(rem_prot * self.config.max_zero_rec_ep_unit_btc)
+                    )
+                else:
+                    est_unpaid = ceil_1e8(rem_prot * self.config.max_zero_rec_ep_unit_btc)
+                _, _, cand_cash_val = compute_margin_and_cash_requirements(
+                    side=active_ep.side,
+                    short_strike_usd=active_ep.short_strike_usd,
+                    long_strike_usd=active_ep.long_strike_usd,
+                    spot_usd=facts.spot_usd,
+                    qty_btc=active_ep.target_qty_btc,
+                    unpaid_prot_cost_btc=est_unpaid,
+                    short_mark_btc=short_mark_from_book(facts.short_book),
+                    portfolio_margining_enabled=facts.portfolio_margining_enabled,
+                    put_stress_spot_factor=self.config.put_stress_spot_factor,
+                    candidate_min_cash_pm_per_btc=self.config.candidate_min_cash_pm_per_btc,
+                    candidate_min_cash_sm_per_btc=self.config.candidate_min_cash_sm_per_btc,
+                    apply_fixed_candidate_min_cash=False,
+                )
+            elif self._last_evaluated_min_cash_btc is not None:
+                cand_cash_val = self._last_evaluated_min_cash_btc
+            else:
+                cand_cash_val = None
             acct_block = {
                 "spot_usd": dec_str(facts.spot_usd),
                 "balance_btc": dec_str(facts.balance_btc if facts.balance_btc is not None else facts.equity_btc),
@@ -2990,7 +3092,8 @@ class ExecutionCoordinator:
                 "margin_buffer_ratio": mm_ratio,
                 "portfolio_margining_enabled": facts.portfolio_margining_enabled,
                 "margin_model": facts.margin_model,
-                "candidate_min_cash_btc": dec_str(cand_cash),
+                "candidate_min_cash_btc": dec_str(cand_cash_val) if cand_cash_val is not None else None,
+                "candidate_min_cash_fixed_floor_applied": apply_fixed,
             }
 
         settled_rows = self.store.conn.execute(
@@ -3691,6 +3794,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             mode=args.mode,
             env_tag=eff_env_tag,
             subaccount_id=args.subaccount_id,
+            allow_main_account=args.allow_main_account,
             store=store,
             adapter=adapter,
             status_path=args.status_path,

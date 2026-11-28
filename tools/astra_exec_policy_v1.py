@@ -45,6 +45,7 @@ if __package__:
         quant_qty,
         round_tick_down,
         round_tick_up,
+        short_mark_from_book,
         sweep_ask_price,
         sweep_bid_price,
         trade_purpose_for_episode,
@@ -88,6 +89,7 @@ else:
         quant_qty,
         round_tick_down,
         round_tick_up,
+        short_mark_from_book,
         sweep_ask_price,
         sweep_bid_price,
         trade_purpose_for_episode,
@@ -267,6 +269,7 @@ def _entry_capital_and_margin_ok(
     unpaid_prot_cost_btc: Decimal,
     effective_budget_btc: Decimal,
     config: ExecConfig,
+    apply_fixed_candidate_min_cash: bool = True,
 ) -> tuple[bool, str | None]:
     """Hard safety pre-check for B_eff, SM/PM initial margin, candidate operational cash, and MM buffer."""
     if effective_budget_btc <= ZERO:
@@ -274,15 +277,7 @@ def _entry_capital_and_margin_ok(
     if facts.spot_usd <= ZERO:
         return False, "SPOT_INDEX_UNAVAILABLE"
 
-    sb = facts.short_book
-    short_mark = ZERO
-    if sb is not None:
-        if sb.mark_price is not None and sb.mark_price > ZERO:
-            short_mark = sb.mark_price
-        elif sb.ask_price is not None and sb.ask_price > ZERO:
-            short_mark = sb.ask_price
-        elif sb.bid_price is not None and sb.bid_price > ZERO:
-            short_mark = sb.bid_price
+    short_mark = short_mark_from_book(facts.short_book)
     if not facts.portfolio_margining_enabled and short_mark <= ZERO:
         return False, "SHORT_MARK_UNAVAILABLE_FOR_SM"
 
@@ -298,6 +293,7 @@ def _entry_capital_and_margin_ok(
         put_stress_spot_factor=config.put_stress_spot_factor,
         candidate_min_cash_pm_per_btc=config.candidate_min_cash_pm_per_btc,
         candidate_min_cash_sm_per_btc=config.candidate_min_cash_sm_per_btc,
+        apply_fixed_candidate_min_cash=apply_fixed_candidate_min_cash,
     )
     # Non-self-locking episode risk demand <= B_eff (Spec 4.1.3)
     episode_risk_demand = stress_loss + paid_ep_outlay_btc + unpaid_prot_cost_btc
@@ -959,6 +955,7 @@ def evaluate_step(
     writes_disabled: bool = False,
     require_p5_facts: bool = False,
     dcod_confirmed: bool = True,
+    apply_fixed_candidate_min_cash: bool = True,
     foreign_event_uids: Collection[str] = (),
     foreign_order_ids: Collection[str] = (),
 ) -> StepResult:
@@ -1622,6 +1619,7 @@ def evaluate_step(
                             unpaid_prot_cost_btc=ZERO,
                             effective_budget_btc=b_eff,
                             config=config,
+                            apply_fixed_candidate_min_cash=apply_fixed_candidate_min_cash,
                         )
                         if not margin_ok:
                             alerts.append(f"ENTRY_GATE_WAIT:{margin_reason}")
@@ -1690,6 +1688,7 @@ def evaluate_step(
                             unpaid_prot_cost_btc=unpaid_prot_est,
                             effective_budget_btc=b_eff,
                             config=config,
+                            apply_fixed_candidate_min_cash=apply_fixed_candidate_min_cash,
                         )
                         if not margin_ok:
                             alerts.append(f"ENTRY_GATE_WAIT:{margin_reason}")

@@ -527,6 +527,19 @@ def spread_stress_loss_btc(
     raise ValueError(f"unknown side: {side}")
 
 
+def short_mark_from_book(short_book: "BookQuote | None") -> Decimal:
+    """Extract best available short mark price reference from a book snapshot."""
+    if short_book is None:
+        return ZERO
+    if short_book.mark_price is not None and short_book.mark_price > ZERO:
+        return short_book.mark_price
+    if short_book.ask_price is not None and short_book.ask_price > ZERO:
+        return short_book.ask_price
+    if short_book.bid_price is not None and short_book.bid_price > ZERO:
+        return short_book.bid_price
+    return ZERO
+
+
 def compute_margin_and_cash_requirements(
     *,
     side: str,
@@ -540,6 +553,7 @@ def compute_margin_and_cash_requirements(
     put_stress_spot_factor: Decimal = Decimal("0.70"),
     candidate_min_cash_pm_per_btc: Decimal = Decimal("0.15"),
     candidate_min_cash_sm_per_btc: Decimal = Decimal("0.25"),
+    apply_fixed_candidate_min_cash: bool = True,
 ) -> tuple[Decimal, Decimal, Decimal]:
     """Return (stress_loss_btc, margin_req_btc, min_cash_req_btc) per Spec 4.2."""
     stress_loss = spread_stress_loss_btc(
@@ -553,7 +567,7 @@ def compute_margin_and_cash_requirements(
     c_prot = max(ZERO, unpaid_prot_cost_btc)
     if portfolio_margining_enabled:
         m_req = ceil_1e8(Decimal("1.25") * (stress_loss + c_prot))
-        cand_cash = ceil_1e8(qty_btc * candidate_min_cash_pm_per_btc)
+        cand_cash = ceil_1e8(qty_btc * candidate_min_cash_pm_per_btc) if apply_fixed_candidate_min_cash else ZERO
     else:
         s_clean = max(Decimal("1"), spot_usd)
         if side.lower() == "put":
@@ -564,7 +578,7 @@ def compute_margin_and_cash_requirements(
         base_factor = max(Decimal("0.15") - otm_ratio, Decimal("0.10"))
         mark_clean = max(ZERO, short_mark_btc)
         m_req = c_prot + ceil_1e8(qty_btc * (base_factor + mark_clean + Decimal("0.05")))
-        cand_cash = ceil_1e8(qty_btc * candidate_min_cash_sm_per_btc)
+        cand_cash = ceil_1e8(qty_btc * candidate_min_cash_sm_per_btc) if apply_fixed_candidate_min_cash else ZERO
     min_cash = max(m_req, cand_cash)
     return stress_loss, m_req, min_cash
 
@@ -844,6 +858,7 @@ class ExchangeFacts:
     balance_btc: Decimal | None = None
     portfolio_margining_enabled: bool = False
     margin_model: str = "SM"
+    account_type: str = ""
     trades_complete: bool | None = None
     positions_complete: bool = True
     clock_rtt_ok: bool = True
@@ -856,6 +871,33 @@ class ExchangeFacts:
             object.__setattr__(self, "trades_complete", bool(self.history_complete))
         if not self.margin_model:
             object.__setattr__(self, "margin_model", "PM" if self.portfolio_margining_enabled else "SM")
+
+
+def is_designated_mainnet_spm_single_episode_scope(
+    *,
+    mode: str,
+    subaccount_id: str,
+    allow_main_account: bool,
+    facts: ExchangeFacts,
+    target_qty_btc: Decimal,
+    max_qty_btc: Decimal,
+    config: ExecConfig,
+) -> bool:
+    """Return True only for designated Mainnet main-account S:PM 0.1 BTC single-episode controlled trials."""
+    sub_norm = str(subaccount_id or "").strip()
+    return (
+        mode == "LIVE"
+        and bool(sub_norm)
+        and sub_norm != "0"
+        and bool(allow_main_account)
+        and str(facts.account_type or "").strip().lower() == "main"
+        and bool(facts.portfolio_margining_enabled)
+        and str(facts.margin_model or "").strip().lower() == "segregated_pm"
+        and int(config.max_active_episodes) == 1
+        and config.initial_qty_btc <= Decimal("0.1")
+        and max_qty_btc <= Decimal("0.1")
+        and target_qty_btc <= Decimal("0.1")
+    )
 
 
 def facts_clock_skew_ms(facts: ExchangeFacts, fallback_now_ms: int) -> int:

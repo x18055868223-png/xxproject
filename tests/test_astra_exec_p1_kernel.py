@@ -662,6 +662,21 @@ def test_math_stepped_ticks_split_fee_oracle_and_stress_property():
     assert m_sm > m_pm
     assert cash_pm >= D("0.015") and cash_sm >= D("0.025")
 
+    stress_dyn, m_pm_dyn, cash_pm_dyn = contracts.compute_margin_and_cash_requirements(
+        side="put",
+        short_strike_usd=D("58500"),
+        long_strike_usd=D("56500"),
+        spot_usd=D("59389.71"),
+        qty_btc=D("0.1"),
+        unpaid_prot_cost_btc=D("0.000045"),
+        short_mark_btc=D("0.0018"),
+        portfolio_margining_enabled=True,
+        apply_fixed_candidate_min_cash=False,
+    )
+    assert stress_dyn == D("0.00481084")
+    assert m_pm_dyn == D("0.00606980")
+    assert cash_pm_dyn == m_pm_dyn and cash_pm_dyn < D("0.015")
+
 
 def test_store_four_tables_legacy_migration_and_auth_audit_chain(tmp_path: Path):
     # 1. Fresh DB has strictly 4 tables (no approvals table)
