@@ -1256,14 +1256,15 @@ def test_llm_timeout_precedence_initial_vs_hold_and_dynamic_deadline_cap(tmp_pat
     assert s_generic['timeout_s'] == 360.0
     assert s_generic['timeout_explicit'] is False
     assert s_generic['initial_timeout_s'] == 600.0
-    assert s_generic['hold_timeout_s'] == 360.0
+    assert s_generic['hold_timeout_s'] == 600.0
+    assert tracking._llm_settings({'model': 'deepseek-chat'})['hold_timeout_s'] == 360.0
 
     monkeypatch.setenv('ASTRA_PLAYER_TIMEOUT_SEC', '520')
     s_player = tracking._llm_settings({'model': 'deepseek-reasoner'})
     assert s_player['timeout_s'] == 520.0
     assert s_player['timeout_explicit'] is True
     assert s_player['initial_timeout_s'] == 520.0
-    assert s_player['hold_timeout_s'] == 360.0  # hold bounded <= 360 unless explicit/hold env
+    assert s_player['hold_timeout_s'] == 520.0
 
     monkeypatch.setenv('ASTRA_PLAYER_HOLD_TIMEOUT_SEC', '410')
     assert tracking._llm_settings({'model': 'deepseek-reasoner'})['hold_timeout_s'] == 410.0

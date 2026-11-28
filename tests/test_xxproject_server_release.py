@@ -643,13 +643,24 @@ def test_execution_health_checks_and_rollback_unit_cleanup(tmp_path: Path, monke
     res_alert = health_check._check_execution_status(st_path, now_ms=now_ms, max_age_ms=120_000)
     assert res_alert["ok"] is False and "ORDER_TRADES_EXCEED_ORDER_FILLED" in res_alert["reason"]
 
-    # --expected-exec-mode TESTNET allows TESTNET
+    # --expected-exec-mode TESTNET allows TESTNET; LIVE allows LIVE and fails on mismatch
     tn_ok_payload = {**base_status, "mode": "TESTNET", "writes_enabled": True, "active_episode": None}
     st_path.write_text(json.dumps(tn_ok_payload), encoding="utf-8")
     res_tn = health_check._check_execution_status(
         st_path, now_ms=now_ms, max_age_ms=120_000, require_shadow_only=False, expected_mode="TESTNET"
     )
     assert res_tn["ok"] is True and res_tn["mode"] == "TESTNET"
+
+    live_ok_payload = {**base_status, "mode": "LIVE", "writes_enabled": True, "active_episode": None}
+    st_path.write_text(json.dumps(live_ok_payload), encoding="utf-8")
+    res_live = health_check._check_execution_status(
+        st_path, now_ms=now_ms, max_age_ms=120_000, require_shadow_only=False, expected_mode="LIVE"
+    )
+    assert res_live["ok"] is True and res_live["mode"] == "LIVE"
+    res_live_mis = health_check._check_execution_status(
+        st_path, now_ms=now_ms, max_age_ms=120_000, require_shadow_only=False, expected_mode="SHADOW_ONLY"
+    )
+    assert res_live_mis["ok"] is False and res_live_mis["reason"] == "execution_mode_mismatch"
 
     # 2. Rolling back to a release without with_execution stops/cleans up astra-execution-coordinator.service & 60-exec-control.conf
     builder = _load_script("xxproject_build_rb_exec", BUILD_SCRIPT)

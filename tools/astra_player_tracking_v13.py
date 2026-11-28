@@ -1362,6 +1362,10 @@ def _llm_settings(llm_config=None):
         hold_timeout_s = float(cfg_timeout)
     elif hold_timeout_env is not None:
         hold_timeout_s = float(hold_timeout_env)
+    elif player_timeout_env is not None:
+        hold_timeout_s = timeout_s
+    elif is_heavy_model:
+        hold_timeout_s = max(timeout_s, 600.0)
     else:
         hold_timeout_s = min(timeout_s, 360.0)
     effort = cfg.get('reasoning_effort') or os.environ.get('ASTRA_PLAYER_REASONING_EFFORT') or os.environ.get('LLM_RECON_EFFORT')
@@ -2787,7 +2791,7 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
         live_limit = int(os.environ.get('ASTRA_PLAYER_LIVE_DAILY_HTTP_LIMIT') or 60)
         cfg['budget'] = signal_llm_review.DailyHttpBudget(live_path, limit=live_limit)
     budget_role = 'astra_player_live_hold_review' if live_ctx is not None else 'astra_player_hold_review'
-    hold_timeout_s = float(cfg.get('hold_timeout_s') or min(float(cfg.get('timeout_s', 300)), 360.0))
+    hold_timeout_s = float(cfg.get('hold_timeout_s') or float(cfg.get('timeout_s', 300)))
     hold_stream = _stream_enabled(cfg)
     stale_inflight_ms = max(8 * dossier.MINUTE, int(hold_timeout_s * 1000) + 60_000)
     eff_service_deadline = (
@@ -3383,8 +3387,8 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
     return result_out
 
 
-def _resolve_live_execution_context_for_hand(exec_status_path, hand_name):
-    """Read coordinator public_status.json (read-only) and return normalized real_execution_context if hand is active."""
+def _resolve_live_execution_context_for_hand(exec_status_path, hand_name, now_ms=None):
+    """Read coordinator public_status.json (read-only) and return normalized real_execution_context if hand is active and fresh."""
     import math
     cand_path = exec_status_path or os.environ.get('ASTRA_EXEC_STATUS_PATH')
     if not cand_path:
@@ -3401,8 +3405,23 @@ def _resolve_live_execution_context_for_hand(exec_status_path, hand_name):
         return None
     if not isinstance(payload, dict):
         return None
-    if bool(payload.get('stale')) or str(payload.get('mode') or '').upper() == 'SHADOW_ONLY':
+    mode = str(payload.get('mode') or '').upper()
+    if bool(payload.get('stale')) or mode not in {'TESTNET', 'LIVE'}:
         return None
+    if 'generated_at_ms' in payload:
+        gen_ms = payload.get('generated_at_ms')
+        if isinstance(gen_ms, bool) or not isinstance(gen_ms, (int, float)) or not math.isfinite(float(gen_ms)):
+            return None
+        raw_limit = payload.get('stale_after_ms')
+        stale_limit = (
+            int(raw_limit)
+            if (isinstance(raw_limit, (int, float)) and not isinstance(raw_limit, bool) and int(raw_limit) > 0)
+            else 45_000
+        )
+        ref_now = int(now_ms) if now_ms is not None else int(time.time() * 1000)
+        age_ms = ref_now - int(gen_ms)
+        if age_ms > stale_limit or age_ms < -5_000:
+            return None
     active = payload.get('active_episode')
     if not isinstance(active, dict):
         return None
@@ -7154,7 +7173,7 @@ def sync_open(
                 meta = load(link_file.parent / 'exports' / dossier.key(terminal['export_id']) / 'manifest.json')
                 if meta.get('settlement_state') == 'settled':
                     continue
-            live_ctx = _resolve_live_execution_context_for_hand(exec_status_path, hand.name)
+            live_ctx = _resolve_live_execution_context_for_hand(exec_status_path, hand.name, now_ms=d.clock())
             sx = optional(link_file.parent / 'shadow_exit.json')
             if (live_ctx is None
                     and isinstance(sx, dict)
@@ -7336,7 +7355,7 @@ def main(argv=None):
                        else sync(d, hand, service, check_due=args.check_due,
                                  archive_root=args.archive, run_review=args.review,
                                  real_execution_context=_resolve_live_execution_context_for_hand(
-                                     args.exec_status_path, hand.name),
+                                     args.exec_status_path, hand.name, now_ms=d.clock()),
                                  live_budget_path=args.live_budget_path))
                 with _short_writer(d):
                     d.summary(load(hand / 'expected.json')['expiry_ms'])

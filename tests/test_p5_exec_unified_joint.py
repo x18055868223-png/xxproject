@@ -409,6 +409,7 @@ def test_u2_landing1_sync_open_cli_and_direct_parity_with_live_context_and_budge
             clk[0] = venue.server_time_ms + 30_000
             venue.advance_time(30_000)
             exec_p2._refresh_books(venue, short_inst, long_inst)
+            coord.run_tick(now_ms=venue.server_time_ms)
             coord.handle_health_fresh(now_ms=venue.server_time_ms)
             _seed_m1_trigger(wb, d, ep_dir, clk, sync_fn)
 
@@ -657,35 +658,48 @@ def test_u4_landing3_zero_short_liability_residual_hold_never_consumes_live_budg
         "entry_spot_usd": "63500",
         "matched_net_credit_btc": "0.0003",
     }
-    # Positive controls: active TP_MANAGED (short_pos > 0), ENTRY (even when short_liability_cleared=True before ES!),
+    # Positive controls: active TP_MANAGED (short_pos > 0) for TESTNET and LIVE, ENTRY (even when short_liability_cleared=True before ES!),
     # cold-restart TP_MANAGED (`facts_asof_ms=None`, `matched_qty > 0`), and malformed entry_ms does NOT raise.
+    ref_now = 1_795_700_006_000
     assert tracking._resolve_live_execution_context_for_hand(
-        _write_status("ok_tp", {"mode": "TESTNET", "stale": False, "facts_asof_ms": 1_795_700_005_000, "active_episode": dict(base_ep)}), hand_id_unit
+        _write_status("ok_tp", {"mode": "TESTNET", "stale": False, "generated_at_ms": 1_795_700_005_000, "stale_after_ms": 15_000, "facts_asof_ms": 1_795_700_005_000, "active_episode": dict(base_ep)}),
+        hand_id_unit,
+        now_ms=ref_now,
     ) is not None
     assert tracking._resolve_live_execution_context_for_hand(
-        _write_status("ok_entry", {"mode": "TESTNET", "stale": False, "facts_asof_ms": 1_795_700_005_000, "active_episode": {**base_ep, "phase": "ENTRY", "short_liability_cleared": True, "short_pos_btc": "0", "matched_qty_btc": "0", "prot_pos_btc": "0.1"}}),
+        _write_status("ok_live", {"mode": "LIVE", "stale": False, "generated_at_ms": 1_795_700_005_000, "stale_after_ms": 15_000, "facts_asof_ms": 1_795_700_005_000, "active_episode": dict(base_ep)}),
         hand_id_unit,
+        now_ms=ref_now,
     ) is not None
     assert tracking._resolve_live_execution_context_for_hand(
-        _write_status("ok_cold_restart", {"mode": "TESTNET", "stale": False, "facts_asof_ms": None, "active_episode": {**base_ep, "phase": "TP_MANAGED", "short_pos_btc": "0", "matched_qty_btc": "0.1"}}),
+        _write_status("ok_entry", {"mode": "TESTNET", "stale": False, "generated_at_ms": 1_795_700_005_000, "stale_after_ms": 15_000, "facts_asof_ms": 1_795_700_005_000, "active_episode": {**base_ep, "phase": "ENTRY", "short_liability_cleared": True, "short_pos_btc": "0", "matched_qty_btc": "0", "prot_pos_btc": "0.1"}}),
         hand_id_unit,
+        now_ms=ref_now,
+    ) is not None
+    assert tracking._resolve_live_execution_context_for_hand(
+        _write_status("ok_cold_restart", {"mode": "TESTNET", "stale": False, "generated_at_ms": 1_795_700_005_000, "stale_after_ms": 15_000, "facts_asof_ms": None, "active_episode": {**base_ep, "phase": "TP_MANAGED", "short_pos_btc": "0", "matched_qty_btc": "0.1"}}),
+        hand_id_unit,
+        now_ms=ref_now,
     ) is not None
     ctx_bad_ts = tracking._resolve_live_execution_context_for_hand(
-        _write_status("ok_bad_ts", {"mode": "TESTNET", "stale": False, "facts_asof_ms": 1_795_700_005_000, "active_episode": {**base_ep, "entry_started_at_ms": "not_an_int"}}),
+        _write_status("ok_bad_ts", {"mode": "TESTNET", "stale": False, "generated_at_ms": 1_795_700_005_000, "stale_after_ms": 15_000, "facts_asof_ms": 1_795_700_005_000, "active_episode": {**base_ep, "entry_started_at_ms": "not_an_int"}}),
         hand_id_unit,
+        now_ms=ref_now,
     )
     assert ctx_bad_ts is not None and "actual_entry_at_ms" not in ctx_bad_ts
 
-    # Negative controls: residual hold / zero short liability / stale / SHADOW_ONLY -> MUST return None
+    # Negative controls: residual hold / zero short liability / stale flag / expired TTL (even stale=False!) / SHADOW_ONLY -> MUST return None
     neg_cases = {
-        "short_liability_cleared_phase": {"mode": "TESTNET", "stale": False, "facts_asof_ms": 1_795_700_005_000, "active_episode": {**base_ep, "phase": "SHORT_LIABILITY_CLEARED", "short_liability_cleared": True, "short_pos_btc": "0", "prot_pos_btc": "0.1"}},
-        "inventory_cleared_phase": {"mode": "TESTNET", "stale": False, "facts_asof_ms": 1_795_700_005_000, "active_episode": {**base_ep, "phase": "INVENTORY_CLEARED", "short_liability_cleared": True, "short_pos_btc": "0", "prot_pos_btc": "0"}},
-        "zero_short_only_prot_tp": {"mode": "TESTNET", "stale": False, "facts_asof_ms": 1_795_700_005_000, "active_episode": {**base_ep, "phase": "TP_MANAGED", "short_liability_cleared": False, "short_pos_btc": "0", "prot_pos_btc": "0.1"}},
-        "stale_status": {"mode": "TESTNET", "stale": True, "facts_asof_ms": 1_795_700_005_000, "active_episode": dict(base_ep)},
-        "shadow_only_mode": {"mode": "SHADOW_ONLY", "stale": False, "facts_asof_ms": 1_795_700_005_000, "active_episode": dict(base_ep)},
+        "short_liability_cleared_phase": {"mode": "TESTNET", "stale": False, "generated_at_ms": 1_795_700_005_000, "stale_after_ms": 15_000, "facts_asof_ms": 1_795_700_005_000, "active_episode": {**base_ep, "phase": "SHORT_LIABILITY_CLEARED", "short_liability_cleared": True, "short_pos_btc": "0", "prot_pos_btc": "0.1"}},
+        "inventory_cleared_phase": {"mode": "TESTNET", "stale": False, "generated_at_ms": 1_795_700_005_000, "stale_after_ms": 15_000, "facts_asof_ms": 1_795_700_005_000, "active_episode": {**base_ep, "phase": "INVENTORY_CLEARED", "short_liability_cleared": True, "short_pos_btc": "0", "prot_pos_btc": "0"}},
+        "zero_short_only_prot_tp": {"mode": "TESTNET", "stale": False, "generated_at_ms": 1_795_700_005_000, "stale_after_ms": 15_000, "facts_asof_ms": 1_795_700_005_000, "active_episode": {**base_ep, "phase": "TP_MANAGED", "short_liability_cleared": False, "short_pos_btc": "0", "prot_pos_btc": "0.1"}},
+        "stale_status": {"mode": "TESTNET", "stale": True, "generated_at_ms": 1_795_700_005_000, "stale_after_ms": 15_000, "facts_asof_ms": 1_795_700_005_000, "active_episode": dict(base_ep)},
+        "expired_ttl_live": {"mode": "LIVE", "stale": False, "generated_at_ms": 1_795_700_005_000, "stale_after_ms": 15_000, "facts_asof_ms": 1_795_700_005_000, "active_episode": dict(base_ep)},
+        "shadow_only_mode": {"mode": "SHADOW_ONLY", "stale": False, "generated_at_ms": 1_795_700_005_000, "stale_after_ms": 15_000, "facts_asof_ms": 1_795_700_005_000, "active_episode": dict(base_ep)},
     }
     for cname, payload in neg_cases.items():
-        assert tracking._resolve_live_execution_context_for_hand(_write_status(cname, payload), hand_id_unit) is None, cname
+        case_now = (1_795_700_005_000 + 20_000) if cname == "expired_ttl_live" else ref_now
+        assert tracking._resolve_live_execution_context_for_hand(_write_status(cname, payload), hand_id_unit, now_ms=case_now) is None, cname
 
     # 2) Real ExecutionCoordinator produces a genuine `SHORT_LIABILITY_CLEARED` (`RESIDUAL_HOLD`) `public_status.json`
     #    after partial EP + dust bid -> `sync_open --review` uses shadow ledger and leaves live ledger at 0!
@@ -726,7 +740,7 @@ def test_u4_landing3_zero_short_liability_residual_hold_never_consumes_live_budg
         pub_entry = json.loads(st_path.read_text(encoding="utf-8"))
         assert pub_entry["active_episode"]["phase"] == "ENTRY"
         assert pub_entry["active_episode"]["short_liability_cleared"] is True
-        assert tracking._resolve_live_execution_context_for_hand(st_path, hand_id) is not None
+        assert tracking._resolve_live_execution_context_for_hand(st_path, hand_id, now_ms=venue.server_time_ms) is not None
 
         coord.handle_exit_all(operator="u4_op", reason="OPERATOR_EXIT_ALL", now_ms=venue.server_time_ms)
         exec_p2._drive(coord, venue, short_inst, long_inst, n=3, dt_ms=100)
@@ -737,7 +751,7 @@ def test_u4_landing3_zero_short_liability_residual_hold_never_consumes_live_budg
         pub = json.loads(st_path.read_text(encoding="utf-8"))
         assert pub["active_episode"]["phase"] == "SHORT_LIABILITY_CLEARED"
         assert D(pub["active_episode"]["prot_pos_btc"]) == D("0.1") and D(pub["active_episode"]["short_pos_btc"]) == ZERO
-        assert tracking._resolve_live_execution_context_for_hand(st_path, hand_id) is None
+        assert tracking._resolve_live_execution_context_for_hand(st_path, hand_id, now_ms=venue.server_time_ms) is None
 
         # Trigger a hold review via `sync_open(..., exec_status_path=st_path, live_budget_path=live_ledger)`:
         # Must NOT touch `live_ledger` (0 calls); runs on shadow ledger instead!

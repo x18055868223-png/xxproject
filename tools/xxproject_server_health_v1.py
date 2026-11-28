@@ -806,7 +806,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--exec-status-path", type=Path, default=None)
     parser.add_argument("--require-execution", action="store_true")
-    parser.add_argument("--expected-exec-mode", choices=("SHADOW_ONLY", "DRY_RUN", "TESTNET"), default="SHADOW_ONLY")
+    parser.add_argument("--expected-exec-mode", choices=("SHADOW_ONLY", "DRY_RUN", "TESTNET", "LIVE"), default="SHADOW_ONLY")
     parser.add_argument("--max-exec-status-age-ms", type=int, default=120_000)
     parser.add_argument("--max-exec-facts-age-ms", type=int, default=45_000)
     parser.add_argument("--max-producer-age-ms", type=int, default=300_000)

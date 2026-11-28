@@ -1196,6 +1196,8 @@ def test_p5_cli_sync_open_reads_public_status_and_bypasses_exhausted_shadow_budg
             # Seed CONDITION_TRIGGERED after entry_closed (TP_MANAGED) so sync-open --review fires Priority A trigger
             now[0] += 5 * pt13_test.M
             venue.set_server_time(now[0])
+            _refresh_books(venue, short_inst, long_inst)
+            coord.run_tick(now_ms=now[0])
             with p5_mod._short_writer(d):
                 d.event(
                     ep_dir,
@@ -1205,7 +1207,7 @@ def test_p5_cli_sync_open_reads_public_status_and_bypasses_exhausted_shadow_budg
                     observed=now[0] - pt13_test.M,
                     available=now[0],
                 )
-            coord.emit_status_snapshot(now_ms=now[0]) if hasattr(coord, "emit_status_snapshot") else coord.handle_health_fresh(now_ms=now[0])
+            coord.run_tick(now_ms=now[0])
 
             monkeypatch.setenv("ASTRA_AI_SHADOW_LOCK_TOKEN", str(wb.config.shadow_service_token))
             monkeypatch.setenv("LLM_API_KEY", "test-key")
@@ -1214,6 +1216,10 @@ def test_p5_cli_sync_open_reads_public_status_and_bypasses_exhausted_shadow_budg
             monkeypatch.setenv("ASTRA_PLAYER_USAGE_LEDGER", str(shadow_ledger))
             monkeypatch.setenv("ASTRA_PLAYER_DAILY_HTTP_LIMIT", "15")
             monkeypatch.setenv("ASTRA_PLAYER_LIVE_DAILY_HTTP_LIMIT", "60")
+
+            # Align Dossiers wall clock with the test's simulated clock so coordinator public_status TTL matches
+            orig_dossiers = p5_mod.dossier.Dossiers
+            monkeypatch.setattr(p5_mod.dossier, "Dossiers", lambda rp, clock=None, **kw: orig_dossiers(rp, clock=(clock or (lambda: now[0])), **kw))
 
             # Drive ACTUAL P5 CLI entrypoint (main(['--url', ..., 'sync-open', ...]))!
             rc = p5_mod.main(
@@ -3092,3 +3098,303 @@ def test_real_p5_latest_dossier_contract_case_file_l1_and_ai_hold_unknown_recove
         assert ep_final.exit_latch_reason == "AI_REVOKE"
     finally:
         st.close()
+
+
+def test_live_mainnet_mode_guards_main_account_binding_and_readonly_dcod(tmp_path: Path):
+    # 1. validate_endpoint_for_mode & read-only token guards
+    coord_mod.validate_endpoint_for_mode("LIVE", "https://www.deribit.com")
+    with pytest.raises(coord_mod.EnvironmentGuardError):
+        coord_mod.validate_endpoint_for_mode("LIVE", "https://test.deribit.com")
+    with pytest.raises(coord_mod.EnvironmentGuardError):
+        coord_mod.DeribitRestAdapter(
+            mode="LIVE",
+            base_url="https://www.deribit.com",
+            read_only_access_token="ro-tok",
+            subaccount_id="900001",
+        )
+    with pytest.raises(coord_mod.EnvironmentGuardError):
+        coord_mod.DeribitRestAdapter(
+            mode="SHADOW_ONLY",
+            base_url="https://www.deribit.com",
+            client_id="cid",
+            client_secret="csec",
+            read_only_access_token="ro-tok",
+        )
+
+    tok_file = tmp_path / "ro.token"
+    tok_file.write_text("tok_v1\n", encoding="utf-8")
+    seen_auth_headers: list[str] = []
+
+    def _ro_http(method: str, params: dict[str, Any], *, private: bool = False) -> Any:
+        del private
+        if method == "public/get_time":
+            return 1_795_882_000_000
+        if method == "private/get_account_summary":
+            base: dict[str, Any] = {
+                "margin_model": "segregated_pm",
+                "portfolio_margining_enabled": True,
+                "balance": 0.05,
+                "equity": 0.05,
+                "available_funds": 0.05,
+                "initial_margin": 0.0,
+                "maintenance_margin": 0.0,
+            }
+            if params.get("extended"):
+                base.update({"id": 900001, "username": "acct-main-sim", "type": "main"})
+            return base
+        if method == "private/get_positions":
+            return []
+        if method == "private/get_open_orders_by_currency":
+            return []
+        if method == "private/get_cancel_on_disconnect":
+            return {"enabled": False, "scope": "account"}
+        raise AssertionError(f"unexpected ro method {method}")
+
+    adp_ro = coord_mod.DeribitRestAdapter(
+        mode="SHADOW_ONLY",
+        base_url="https://www.deribit.com",
+        subaccount_id="900001",
+        allow_main_account=True,
+        read_only_token_file=tok_file,
+        http_fn=_ro_http,
+    )
+    assert adp_ro._has_private_auth() is True
+    assert adp_ro._allow_private_writes() is False
+    assert adp_ro._ensure_auth() == "tok_v1"
+    tok_file.write_text("tok_v2\n", encoding="utf-8")
+    assert adp_ro.reload_readonly_token() is True
+    assert adp_ro._ensure_auth() == "tok_v2"
+    for write_fn in (
+        lambda: adp_ro.disable_cancel_on_disconnect(),
+        lambda: adp_ro.cancel_by_label("ax1:live:1:TP:0001"),
+        lambda: adp_ro.submit_order(
+            instrument_name="BTC-29NOV26-58000-P",
+            direction="buy",
+            amount=D("0.1"),
+            limit_price=D("0.0010"),
+            label="ax1:live:1:EP:0001",
+            time_in_force="IOC",
+            reduce_only=False,
+            post_only=False,
+            reject_post_only=False,
+            valid_until_ms=1_795_882_005_000,
+        ),
+    ):
+        with pytest.raises(coord_mod.WriteBlockedByModeError):
+            write_fn()
+
+    facts_ro = adp_ro.fetch_facts("", "", need_tx_logs=False)
+    assert facts_ro.api_error is None
+    assert facts_ro.portfolio_margining_enabled is True
+    assert facts_ro.margin_model == "segregated_pm"
+    assert adp_ro.get_cancel_on_disconnect() == {"enabled": False, "scope": "account"}
+    del seen_auth_headers
+
+    # 2. Designated main-account binding & mismatch rejection in LIVE mode
+    adp_live_ok = coord_mod.DeribitRestAdapter(
+        mode="LIVE",
+        base_url="https://www.deribit.com",
+        client_id="cid",
+        client_secret="csec",
+        subaccount_id="900001",
+        allow_main_account=True,
+        http_fn=_ro_http,
+    )
+    assert adp_live_ok._allow_private_writes() is True
+    assert adp_live_ok.fetch_facts("", "", need_tx_logs=False).api_error is None
+
+    adp_live_mismatch = coord_mod.DeribitRestAdapter(
+        mode="LIVE",
+        base_url="https://www.deribit.com",
+        client_id="cid",
+        client_secret="csec",
+        subaccount_id="999999",
+        allow_main_account=True,
+        http_fn=_ro_http,
+    )
+    assert str(adp_live_mismatch.fetch_facts("", "", need_tx_logs=False).api_error or "").startswith("subaccount_mismatch:")
+
+    adp_live_main_disallowed = coord_mod.DeribitRestAdapter(
+        mode="LIVE",
+        base_url="https://www.deribit.com",
+        client_id="cid",
+        client_secret="csec",
+        subaccount_id="900001",
+        allow_main_account=False,
+        http_fn=_ro_http,
+    )
+    assert str(adp_live_main_disallowed.fetch_facts("", "", need_tx_logs=False).api_error or "").startswith("main_account_forbidden:")
+
+    # 3. LIVE coordinator guards (env_tag != tn, non-empty account ID, read-only DCOD)
+    st = store.ExecutionStore(tmp_path / "live_dcod.sqlite3")
+    try:
+        venue = _setup_venue()
+        adp_sim = SimExchangeAdapter(venue)
+        with pytest.raises(coord_mod.EnvironmentGuardError, match="INVALID_LIVE_ENV_TAG"):
+            coord_mod.ExecutionCoordinator(
+                mode="LIVE", env_tag="tn", subaccount_id="900001", store=st, adapter=adp_sim, status_path=tmp_path / "l1.json"
+            )
+        with pytest.raises(coord_mod.EnvironmentGuardError, match="LIVE_ACCOUNT_ID_REQUIRED"):
+            coord_mod.ExecutionCoordinator(
+                mode="LIVE", env_tag="live", subaccount_id="", store=st, adapter=adp_sim, status_path=tmp_path / "l2.json"
+            )
+
+        dcod_state = {"enabled": True}
+        adp_sim.get_cancel_on_disconnect = lambda: {"enabled": dcod_state["enabled"], "scope": "account"}  # type: ignore[attr-defined]
+        dos = tmp_path / "dos_live_dcod"
+        dos.mkdir()
+        _build_p5_dossier(dos, decided_at_ms=venue.server_time_ms - 5_000)
+
+        coord = coord_mod.ExecutionCoordinator(
+            mode="LIVE",
+            env_tag="live",
+            subaccount_id="900001",
+            store=st,
+            adapter=adp_sim,
+            status_path=tmp_path / "live_st.json",
+            dossier_root=dos,
+        )
+        coord.startup_init(now_ms=venue.server_time_ms)
+        # LIVE must NEVER call disable_cancel_on_disconnect! When DCOD=enabled, fails closed.
+        assert adp_sim.disable_cod_calls == 0
+        assert coord._dcod_confirmed is False
+        st.set_capital_policy(entry_armed=True, budget_cap_btc=D("0.20"), max_qty_btc=D("0.1"), now_ms=venue.server_time_ms)
+        st_blk = coord.run_tick(now_ms=venue.server_time_ms)
+        assert coord._last_reject_reason == "DCOD_UNCONFIRMED"
+        assert "dcod_unconfirmed" in str(coord._dcod_error or "")
+        assert "dcod_enabled_on_account_requires_manual_disable" in str(coord._dcod_error or "")
+        assert "dcod_unconfirmed" in str(st_blk.get("last_error") or "")
+        assert "dcod_enabled_on_account_requires_manual_disable" in str(st_blk.get("last_error") or "")
+        assert st.get_active_episode() is None
+
+        # Once account DCOD is manually disabled (enabled=False), LIVE confirms read-only and admits cleanly
+        dcod_state["enabled"] = False
+        venue.advance_time(6_000)
+        _refresh_books(venue, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P")
+        coord.run_tick(now_ms=venue.server_time_ms)
+        assert adp_sim.disable_cod_calls == 0
+        assert coord._dcod_confirmed is True
+        assert st.get_active_episode() is not None
+    finally:
+        st.close()
+
+
+def test_live_mainnet_write_paths_recovery_and_takeover(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    # A. Normal EP -> confirmed coverage -> ES -> 85% TP -> fill -> EARLY_FLAT_SETTLED
+    v1 = _setup_venue()
+    v1.subaccount_id = "900001"
+    st1 = store.ExecutionStore(tmp_path / "lwp1.sqlite3")
+    dos1 = tmp_path / "dos1"
+    dos1.mkdir()
+    try:
+        adp1 = SimExchangeAdapter(v1)
+        adp1.get_cancel_on_disconnect = lambda: {"enabled": False, "scope": "account"}  # type: ignore[attr-defined]
+        c1 = coord_mod.ExecutionCoordinator(
+            mode="LIVE", env_tag="live", subaccount_id="900001", store=st1, adapter=adp1,
+            status_path=tmp_path / "st1.json", dossier_root=dos1,
+        )
+        c1.startup_init(now_ms=v1.server_time_ms)
+        c1.handle_capital_policy({"entry_armed": True, "budget_cap_btc": "0.20", "max_qty_btc": "0.1", "operator": "op"}, now_ms=v1.server_time_ms, run_tick_after=False)
+        _build_p5_dossier(dos1, decided_at_ms=v1.server_time_ms - 5_000)
+        _drive(c1, v1, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P", n=4, dt_ms=50)
+        ep1 = st1.get_latest_episode()
+        assert ep1 is not None and ep1.phase == contracts.LifecyclePhase.TP_MANAGED
+        assert adp1.disable_cod_calls == 0
+        tp1 = next(c for c in st1.get_commands(ep1.episode_id) if c.purpose == "TP")
+        v1.fill_resting_order(tp1.label, D("0.1"), price=D("0.0002"), liquidity="M")
+        _drive(c1, v1, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P", n=4, dt_ms=500)
+        assert st1.get_episode(ep1.episode_id).terminal_outcome == "EARLY_FLAT_SETTLED"  # type: ignore[union-attr]
+        # Idempotency: re-running ticks never re-admits same hand_id
+        _drive(c1, v1, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P", n=2, dt_ms=100)
+        assert len(_all_episodes(st1)) == 1
+    finally:
+        st1.close()
+
+    # B. Timeout UNKNOWN -> restart query-before-recover (zero duplicate submit) -> AI_REVOKE -> DISABLE_WRITES persistence
+    v2 = _setup_venue()
+    v2.subaccount_id = "900001"
+    db2 = tmp_path / "lwp2.sqlite3"
+    dos2 = tmp_path / "dos2"
+    dos2.mkdir()
+    _build_p5_dossier(dos2, decided_at_ms=v2.server_time_ms - 5_000)
+    st2 = store.ExecutionStore(db2)
+    try:
+        adp2 = SimExchangeAdapter(v2)
+        adp2.get_cancel_on_disconnect = lambda: {"enabled": False, "scope": "account"}  # type: ignore[attr-defined]
+        c2 = coord_mod.ExecutionCoordinator(
+            mode="LIVE", env_tag="live", subaccount_id="900001", store=st2, adapter=adp2,
+            status_path=tmp_path / "st2.json", dossier_root=dos2,
+        )
+        c2.startup_init(now_ms=v2.server_time_ms)
+        c2.handle_capital_policy({"entry_armed": True, "budget_cap_btc": "0.20", "max_qty_btc": "0.1", "operator": "op"}, now_ms=v2.server_time_ms, run_tick_after=False)
+
+        orig_sub = adp2.submit_order
+        injected = {"done": False}
+        submitted_labels: list[str] = []
+
+        def _timeout_after_fill(**kw: Any) -> contracts.ExchangeOrder:
+            submitted_labels.append(str(kw.get("label") or ""))
+            vo = orig_sub(**kw)
+            if not injected["done"] and ":EP:" in str(kw.get("label") or ""):
+                injected["done"] = True
+                raise coord_mod.VenueTransportError("network_unknown", "simulated_write_timeout")
+            return vo
+
+        monkeypatch.setattr(adp2, "submit_order", _timeout_after_fill)
+        c2.run_tick(now_ms=v2.server_time_ms)
+        ep2 = st2.get_latest_episode()
+        assert ep2 is not None
+        ep_cmds = st2.get_commands(ep2.episode_id)
+        assert any(c.purpose == "EP" and c.status == contracts.CommandStatus.SUBMIT_UNKNOWN for c in ep_cmds)
+        ep_label = next(c.label for c in ep_cmds if c.purpose == "EP")
+        # Single-writer lock prevents concurrent writer
+        with pytest.raises(store.WriterLockError):
+            store.ExecutionStore(db2)
+    finally:
+        st2.close()
+
+    # Restart coordinator on same SQLite DB: queries exchange first, resolves EP without re-submitting, completes ES -> TP
+    v2.advance_time(500)
+    _refresh_books(v2, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P")
+    st2_re = store.ExecutionStore(db2)
+    try:
+        adp2_re = SimExchangeAdapter(v2)
+        adp2_re.get_cancel_on_disconnect = lambda: {"enabled": False, "scope": "account"}  # type: ignore[attr-defined]
+        c2_re = coord_mod.ExecutionCoordinator(
+            mode="LIVE", env_tag="live", subaccount_id="900001", store=st2_re, adapter=adp2_re,
+            status_path=tmp_path / "st2.json", dossier_root=dos2,
+        )
+        c2_re.startup_init(now_ms=v2.server_time_ms)
+        _drive(c2_re, v2, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P", n=4, dt_ms=100)
+        ep2_cmds = st2_re.get_commands(ep2.episode_id)
+        assert len([c for c in ep2_cmds if c.purpose == "EP"]) == 1
+        assert next(c for c in ep2_cmds if c.label == ep_label).status == contracts.CommandStatus.FILLED
+        assert st2_re.get_episode(ep2.episode_id).phase == contracts.LifecyclePhase.TP_MANAGED  # type: ignore[union-attr]
+
+        # Trigger AI_REVOKE -> cancels TP, then DISABLE_WRITES pauses writes & flags manual_takeover across restart
+        _write_p5_event(dos2, kind="AI_REVOKE", ts_ms=v2.server_time_ms)
+        dw_res = c2_re.handle_disable_writes("live_drill_stop", operator="op", now_ms=v2.server_time_ms)
+        assert dw_res["writes_enabled"] is False
+        assert dw_res["manual_takeover_required"] is True
+        st2_re.close()
+
+        st2_ro = store.ExecutionStore(db2)
+        adp2_ro = SimExchangeAdapter(v2)
+        adp2_ro.get_cancel_on_disconnect = lambda: {"enabled": False, "scope": "account"}  # type: ignore[attr-defined]
+        c2_ro = coord_mod.ExecutionCoordinator(
+            mode="LIVE", env_tag="live", subaccount_id="900001", store=st2_ro, adapter=adp2_ro,
+            status_path=tmp_path / "st2.json", dossier_root=dos2,
+        )
+        c2_ro.startup_init(initial_entry_armed=True, now_ms=v2.server_time_ms)
+        assert c2_ro.writes_permitted_by_mode() is False
+        tick_after = c2_ro.run_tick(now_ms=v2.server_time_ms)
+        assert tick_after["writes_enabled"] is False
+        assert tick_after["manual_takeover_required"] is True
+        assert st2_ro.get_capital_auth().entry_armed is False
+        st2_ro.close()
+    finally:
+        try:
+            st2_re.close()
+        except Exception:
+            pass
+

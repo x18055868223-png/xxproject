@@ -1,0 +1,17 @@
+# TEMPLATE ONLY — NOT auto-installed by deploy_release.py!
+# Copy to /etc/systemd/system/astra-execution-coordinator.service.d/90-live-mainnet.conf
+# ONLY after PRELIVE_BLOCKED items are cleared, user explicitly approves budget & live enablement,
+# and /etc/signal-audit/exec-coordinator.env is populated (chmod 0600 root:root).
+#
+# [Service]
+# ExecStart=
+# ExecStart=/usr/bin/python3 /opt/xxproject/current/tools/astra_execution_coordinator_v1.py \
+#   --mode LIVE \
+#   --env-tag ${ASTRA_EXEC_ENV_TAG} \
+#   --base-url ${ASTRA_EXEC_BASE_URL} \
+#   --subaccount-id ${ASTRA_EXEC_SUBACCOUNT_ID} \
+#   --allow-main-account \
+#   --db /var/lib/xxproject/execution/exec_store.sqlite \
+#   --status-path /var/lib/xxproject/execution/public_status.json \
+#   --dossier-root /var/lib/xxproject/workbench/shadow_dossiers \
+#   --control-socket /run/astra-exec/control.sock

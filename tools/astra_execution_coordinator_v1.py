@@ -165,6 +165,7 @@ class ExchangeAdapter(Protocol):
     def get_order_state_by_label(self, label: str) -> list[ExchangeOrder]: ...
     def get_server_time_ms(self) -> int: ...
     def disable_cancel_on_disconnect(self) -> bool: ...
+    def get_cancel_on_disconnect(self) -> dict[str, Any]: ...
 
 
 def validate_endpoint_for_mode(mode: str, base_url: str) -> None:
@@ -176,7 +177,9 @@ def validate_endpoint_for_mode(mode: str, base_url: str) -> None:
         raise EnvironmentGuardError(f"INVALID_HTTPS_ENDPOINT:{base_url}")
     if mode == "TESTNET" and host != "test.deribit.com":
         raise EnvironmentGuardError(f"TESTNET_REQUIRES_TEST_DERIBIT_URL: {base_url}")
-    if host == "www.deribit.com" and mode not in {"SHADOW_ONLY", "DRY_RUN"}:
+    if mode == "LIVE" and host != "www.deribit.com":
+        raise EnvironmentGuardError(f"LIVE_REQUIRES_MAINNET_DERIBIT_URL: {base_url}")
+    if host == "www.deribit.com" and mode not in {"SHADOW_ONLY", "DRY_RUN", "LIVE"}:
         raise EnvironmentGuardError("MAINNET_WRITES_FORBIDDEN_IN_PRELIVE")
 
 
@@ -305,6 +308,9 @@ class DeribitRestAdapter:
         client_id: str | None = None,
         client_secret: str | None = None,
         subaccount_id: str = "",
+        allow_main_account: bool = False,
+        read_only_access_token: str | None = None,
+        read_only_token_file: Path | None = None,
         connect_timeout_s: float = 2.0,
         read_timeout_s: float = 2.5,
         write_timeout_s: float = 3.0,
@@ -314,6 +320,12 @@ class DeribitRestAdapter:
         abort_check: Callable[[], bool] | None = None,
     ) -> None:
         validate_endpoint_for_mode(mode, base_url)
+        has_ro_tok = bool((read_only_access_token and str(read_only_access_token).strip()) or read_only_token_file)
+        if has_ro_tok:
+            if mode not in {"SHADOW_ONLY", "DRY_RUN"}:
+                raise EnvironmentGuardError("READ_ONLY_TOKEN_FORBIDDEN_IN_WRITE_MODE")
+            if client_id or client_secret:
+                raise EnvironmentGuardError("RAW_CREDENTIALS_FORBIDDEN_WITH_READ_ONLY_TOKEN")
         self.mode = mode
         self.base_url = base_url.rstrip("/")
         parsed = urlparse(self.base_url)
@@ -323,6 +335,9 @@ class DeribitRestAdapter:
         self.client_id = client_id
         self.client_secret = client_secret
         self.subaccount_id = subaccount_id
+        self.allow_main_account = bool(allow_main_account)
+        self._read_only_mode = has_ro_tok
+        self._read_only_token_file = Path(read_only_token_file) if read_only_token_file else None
         self.connect_timeout_s = float(connect_timeout_s)
         self.read_timeout_s = float(timeout_s if timeout_s is not None else read_timeout_s)
         self.write_timeout_s = float(timeout_s if timeout_s is not None else write_timeout_s)
@@ -332,8 +347,13 @@ class DeribitRestAdapter:
         self._ssl_ctx = ssl.create_default_context()
         self._conn: http.client.HTTPSConnection | None = None
         self._conn_last_used_mono: float = 0.0
-        self._access_token: str | None = None
+        self._access_token: str | None = (
+            str(read_only_access_token).strip() if (read_only_access_token and str(read_only_access_token).strip()) else None
+        )
         self._token_expires_ms: int = 0
+        self.last_auth_scope: str | None = None
+        self.keepalive_reused_count: int = 0
+        self.keepalive_new_conn_count: int = 0
         self._server_offset_ms: int = 0
         self._has_server_offset: bool = False
         self._last_clock_rtt_ok: bool = True
@@ -379,8 +399,29 @@ class DeribitRestAdapter:
             self._conn.sock.settimeout(op_timeout_s)
         return self._conn, True
 
+    def _has_private_auth(self) -> bool:
+        return bool((self.client_id and self.client_secret) or self._read_only_mode)
+
+    def reload_readonly_token(self) -> bool:
+        """Reload bearer read-only token from configured token file without touching trading writes."""
+        if not self._read_only_mode or self._read_only_token_file is None:
+            return False
+        tok = self._read_only_token_file.read_text(encoding="utf-8").strip()
+        if not tok:
+            raise VenueTransportError("credentials_missing", "read_only_token_file_empty")
+        self._access_token = tok
+        self._token_expires_ms = 0
+        return True
+
     def _allow_private_writes(self) -> bool:
-        return self.mode == "TESTNET" and self._host.lower() == "test.deribit.com"
+        if self._read_only_mode:
+            return False
+        host = self._host.lower()
+        if self.mode == "TESTNET" and host == "test.deribit.com":
+            return True
+        if self.mode == "LIVE" and host == "www.deribit.com":
+            return True
+        return False
 
     def estimated_server_time_ms(self) -> int:
         now_ms = int(time.time() * 1000)
@@ -442,16 +483,24 @@ class DeribitRestAdapter:
         if private:
             token = self._ensure_auth()
             headers["Authorization"] = f"Bearer {token}"
-        qs = urlencode(
-            {
-                k: json.dumps(v).lower() if isinstance(v, bool) else v
-                for k, v in (params or {}).items()
-                if v is not None
-            }
-        )
+        use_jsonrpc_post = method == "public/auth"
         path = f"{self._base_path}/api/v2/{method}"
-        if qs:
-            path = f"{path}?{qs}"
+        body_bytes: bytes | None = None
+        if use_jsonrpc_post:
+            headers["Content-Type"] = "application/json"
+            body_bytes = json.dumps(
+                {"jsonrpc": "2.0", "id": 1, "method": method, "params": dict(params or {})}
+            ).encode("utf-8")
+        else:
+            qs = urlencode(
+                {
+                    k: json.dumps(v).lower() if isinstance(v, bool) else v
+                    for k, v in (params or {}).items()
+                    if v is not None
+                }
+            )
+            if qs:
+                path = f"{path}?{qs}"
 
         op_timeout = self.write_timeout_s if is_write else self.read_timeout_s
         max_attempts = 1 if is_write else 2
@@ -464,7 +513,14 @@ class DeribitRestAdapter:
                     op_timeout_s=op_timeout,
                     refresh_if_idle_s=20.0 if is_write else None,
                 )
-                conn.request("GET", path, headers=headers)
+                if reused:
+                    self.keepalive_reused_count += 1
+                else:
+                    self.keepalive_new_conn_count += 1
+                if use_jsonrpc_post:
+                    conn.request("POST", path, body=body_bytes, headers=headers)
+                else:
+                    conn.request("GET", path, headers=headers)
                 resp = conn.getresponse()
                 raw_bytes = resp.read()
                 self._conn_last_used_mono = time.monotonic()
@@ -521,6 +577,12 @@ class DeribitRestAdapter:
         raise VenueTransportError("network_unknown" if is_write else "network_error", "exhausted_attempts")
 
     def _ensure_auth(self) -> str:
+        if self._read_only_mode:
+            if not self._access_token and self._read_only_token_file is not None:
+                self.reload_readonly_token()
+            if not self._access_token:
+                raise VenueTransportError("credentials_missing", "read_only_token_missing")
+            return self._access_token
         now_ms = int(time.time() * 1000)
         if self._access_token and now_ms < (self._token_expires_ms - 30_000):
             return self._access_token
@@ -534,6 +596,7 @@ class DeribitRestAdapter:
         )
         self._access_token = str(res["access_token"])
         self._token_expires_ms = now_ms + int(res.get("expires_in", 900)) * 1000
+        self.last_auth_scope = str(res.get("scope") or "")
         return self._access_token
 
     def get_server_time_ms(self) -> int:
@@ -549,6 +612,15 @@ class DeribitRestAdapter:
         else:
             self._last_clock_rtt_ok = False
         return res
+
+    def get_cancel_on_disconnect(self) -> dict[str, Any]:
+        """Strictly read-only query of Deribit cancel_on_disconnect state (scope=account)."""
+        if not self._has_private_auth():
+            raise VenueTransportError("credentials_missing", "Deribit API credentials not configured")
+        res = self._raw_call("private/get_cancel_on_disconnect", {"scope": "account"}, private=True, is_write=False)
+        if isinstance(res, Mapping):
+            return dict(res)
+        return {"enabled": bool(res), "scope": "account"}
 
     def disable_cancel_on_disconnect(self) -> bool:
         if not self._allow_private_writes():
@@ -614,7 +686,7 @@ class DeribitRestAdapter:
         return int(res or 0)
 
     def get_order_state(self, order_id: str) -> ExchangeOrder:
-        if not self.client_id or not self.client_secret:
+        if not self._has_private_auth():
             raise VenueTransportError("credentials_missing", "Deribit API credentials not configured")
         res = self._raw_call("private/get_order_state", {"order_id": order_id}, private=True, is_write=False)
         if not isinstance(res, Mapping) or not res.get("order_id"):
@@ -622,7 +694,7 @@ class DeribitRestAdapter:
         return _order_from_deribit(res)
 
     def get_order_state_by_label(self, label: str) -> list[ExchangeOrder]:
-        if not self.client_id or not self.client_secret:
+        if not self._has_private_auth():
             return []
         res = self._raw_call(
             "private/get_order_state_by_label",
@@ -645,7 +717,7 @@ class DeribitRestAdapter:
         include_unfilled: bool = True,
         historical: bool = False,
     ) -> list[ExchangeOrder]:
-        if not self.client_id or not self.client_secret:
+        if not self._has_private_auth():
             return []
         res = self._raw_call(
             "private/get_order_history_by_instrument",
@@ -717,7 +789,7 @@ class DeribitRestAdapter:
                 if spot_usd <= ZERO:
                     spot_usd = opt_dec(lb_raw.get("index_price")) or spot_usd
 
-        if not self.client_id or not self.client_secret:
+        if not self._has_private_auth():
             _fetch_books()
             asof_now, srv_now = _co_sampled_times()
             unauth_err = None if self.mode == "SHADOW_ONLY" else "credentials_missing"
@@ -784,7 +856,9 @@ class DeribitRestAdapter:
                 clock_rtt_ok=self._last_clock_rtt_ok,
             )
 
-        acct = self._raw_call("private/get_account_summary", {"currency": "BTC"}, private=True, is_write=False)
+        acct = self._raw_call(
+            "private/get_account_summary", {"currency": "BTC", "extended": True}, private=True, is_write=False
+        )
         pm_enabled = bool(acct.get("portfolio_margining_enabled", False))
         margin_model = str(acct.get("margin_model") or ("PM" if pm_enabled else "SM"))
         balance_btc = D(acct.get("balance") if acct.get("balance") is not None else (acct.get("equity") or 0))
@@ -793,7 +867,7 @@ class DeribitRestAdapter:
 
         acct_type = str(acct.get("type") or "").strip().lower()
         acct_id_str = str(acct.get("id") or "").strip()
-        if self.mode != "SHADOW_ONLY" and (acct_type == "main" or acct_id_str == "0"):
+        if self.mode != "SHADOW_ONLY" and (acct_id_str == "0" or (acct_type == "main" and not self.allow_main_account)):
             asof_now, srv_now = _co_sampled_times()
             return ExchangeFacts(
                 asof_ms=asof_now,
@@ -1570,6 +1644,15 @@ class ExecutionCoordinator:
     ) -> None:
         if mode not in ALLOWED_MODES:
             raise EnvironmentGuardError(f"INVALID_MODE:{mode}")
+        if mode == "LIVE":
+            env_norm = str(env_tag or "").strip().lower()
+            if env_norm in {"", "tn", "test", "testnet", "dry", "shadow"}:
+                raise EnvironmentGuardError(f"INVALID_LIVE_ENV_TAG:{env_tag}")
+            sub_norm = str(subaccount_id or "").strip()
+            if not sub_norm or sub_norm == "0":
+                raise EnvironmentGuardError("LIVE_ACCOUNT_ID_REQUIRED")
+            if isinstance(adapter, DeribitRestAdapter) and not adapter._allow_private_writes():
+                raise EnvironmentGuardError("LIVE_ADAPTER_WRITES_NOT_PERMITTED")
         self.mode = mode
         self.env_tag = env_tag
         self.subaccount_id = subaccount_id
@@ -1584,7 +1667,8 @@ class ExecutionCoordinator:
         self._pending_exit_all: int = 0
         self._pending_disarm_entry: int = 0
         self._mem_writes_disabled: bool = bool(self.store.writes_disabled()[0])
-        self._dcod_confirmed: bool = self.mode != "TESTNET"
+        self._dcod_confirmed: bool = self.mode not in {"TESTNET", "LIVE"}
+        self._dcod_error: str | None = None
         self._last_dcod_attempt_ms: int = 0
         self._control_interrupt = threading.Event()
         self._wake_event = threading.Event()
@@ -1636,19 +1720,47 @@ class ExecutionCoordinator:
         if disabled:
             self._mem_writes_disabled = True
             return False
-        return self.mode == "TESTNET"
+        if self.mode not in {"TESTNET", "LIVE"}:
+            return False
+        if isinstance(self.adapter, DeribitRestAdapter) and not self.adapter._allow_private_writes():
+            return False
+        return True
 
-    def _ensure_dcod_disabled(self, now_ms: int) -> None:
+    def _check_dcod_for_mode(self, now_ms: int, *, startup: bool = False) -> None:
+        """Verify cancel_on_disconnect is off (LIVE uses strictly read-only get_cancel_on_disconnect)."""
         if not self.writes_permitted_by_mode() or self._dcod_confirmed:
             return
-        if self._last_dcod_attempt_ms > 0 and (now_ms - self._last_dcod_attempt_ms) < 5_000:
+        if not startup and self._last_dcod_attempt_ms > 0 and (now_ms - self._last_dcod_attempt_ms) < 5_000:
             return
         self._last_dcod_attempt_ms = now_ms
         try:
-            self.adapter.disable_cancel_on_disconnect()
-            self._dcod_confirmed = True
+            if self.mode == "LIVE":
+                if not hasattr(self.adapter, "get_cancel_on_disconnect"):
+                    self._dcod_confirmed = False
+                    self._dcod_error = "dcod_unconfirmed:read_probe_unavailable"
+                    self._last_error = self._dcod_error
+                    return
+                dcod = self.adapter.get_cancel_on_disconnect()
+                enabled = bool(dcod.get("enabled")) if isinstance(dcod, Mapping) else bool(dcod)
+                if not enabled:
+                    self._dcod_confirmed = True
+                    self._dcod_error = None
+                else:
+                    self._dcod_confirmed = False
+                    self._dcod_error = "dcod_unconfirmed:dcod_enabled_on_account_requires_manual_disable"
+                    self._last_error = self._dcod_error
+            else:
+                self.adapter.disable_cancel_on_disconnect()
+                self._dcod_confirmed = True
+                self._dcod_error = None
         except Exception as exc:
-            self._last_error = f"dcod_unconfirmed:{exc}"
+            self._dcod_confirmed = False
+            prefix = "dcod_unconfirmed:startup_dcod" if startup else "dcod_unconfirmed"
+            self._dcod_error = f"{prefix}:{exc}"
+            self._last_error = self._dcod_error
+
+    def _ensure_dcod_disabled(self, now_ms: int) -> None:
+        self._check_dcod_for_mode(now_ms, startup=False)
 
     def _next_backoff_ms(self, retry_after_ms: int | None) -> int:
         if retry_after_ms is not None and retry_after_ms > 0:
@@ -1668,13 +1780,7 @@ class ExecutionCoordinator:
     ) -> None:
         self._mem_writes_disabled = bool(self.store.writes_disabled()[0])
         if self.writes_permitted_by_mode():
-            self._last_dcod_attempt_ms = int(now_ms if now_ms is not None else time.time() * 1000)
-            try:
-                self.adapter.disable_cancel_on_disconnect()
-                self._dcod_confirmed = True
-            except Exception as exc:
-                self._dcod_confirmed = False
-                self._last_error = f"startup_dcod:{exc}"
+            self._check_dcod_for_mode(int(now_ms if now_ms is not None else time.time() * 1000), startup=True)
 
         if (
             initial_entry_armed is not None
@@ -2852,7 +2958,7 @@ class ExecutionCoordinator:
             health = "WRITE_DISABLED"
         elif self.mode == "SHADOW_ONLY" and active_block is None:
             health = "SHADOW_IDLE"
-        elif self._last_error or (self._rate_limited_until_ms and now_ms < self._rate_limited_until_ms):
+        elif self._last_error or self._dcod_error or (self._rate_limited_until_ms and now_ms < self._rate_limited_until_ms):
             health = "DEGRADED"
         elif facts is not None and facts_age is not None and facts_age > stale_after:
             health = "STALE"
@@ -2924,7 +3030,7 @@ class ExecutionCoordinator:
             )
 
         rpc_rtt = self.adapter.last_rpc_rtt_ms if isinstance(self.adapter, DeribitRestAdapter) else None
-        effective_last_err = self._last_error or (
+        effective_last_err = self._last_error or self._dcod_error or (
             "dcod_unconfirmed" if (self.writes_permitted_by_mode() and not self._dcod_confirmed) else None
         )
         payload = {
@@ -2992,7 +3098,7 @@ class ExecutionCoordinator:
             unauth_shadow_idle = (
                 isinstance(self.adapter, DeribitRestAdapter)
                 and self.mode == "SHADOW_ONLY"
-                and not (self.adapter.client_id and self.adapter.client_secret)
+                and not self.adapter._has_private_auth()
             )
             if not (short_i and long_i) and unauth_shadow_idle:
                 try:
@@ -3483,12 +3589,32 @@ def _is_posix_runtime() -> bool:
     return os.name != "nt"
 
 
+def _load_credential_secret(name: str, env_var: str) -> str | None:
+    cred_dir = os.environ.get("CREDENTIALS_DIRECTORY")
+    if cred_dir:
+        cand = Path(cred_dir) / name
+        if cand.is_file():
+            val = cand.read_text(encoding="utf-8").strip()
+            if val:
+                return val
+    val_env = os.environ.get(env_var)
+    return val_env.strip() if isinstance(val_env, str) and val_env.strip() else None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="xxproject Single-Writer Execution Coordinator (v1.2.0)")
     parser.add_argument("--mode", choices=ALLOWED_MODES, default="SHADOW_ONLY")
-    parser.add_argument("--env-tag", default="tn")
-    parser.add_argument("--subaccount-id", default=os.environ.get("ASTRA_EXEC_SUBACCOUNT_ID", ""))
-    parser.add_argument("--base-url", default=os.environ.get("ASTRA_EXEC_BASE_URL", TESTNET_BASE_URL))
+    parser.add_argument("--env-tag", default=None)
+    parser.add_argument(
+        "--subaccount-id",
+        default=(os.environ.get("ASTRA_EXEC_SUBACCOUNT_ID") or os.environ.get("ASTRA_EXEC_ACCOUNT_ID") or ""),
+    )
+    parser.add_argument(
+        "--allow-main-account",
+        action="store_true",
+        default=os.environ.get("ASTRA_EXEC_ALLOW_MAIN_ACCOUNT", "").strip().lower() in {"1", "true", "yes"},
+    )
+    parser.add_argument("--base-url", default=None)
     parser.add_argument("--db", type=Path, required=True)
     parser.add_argument("--status-path", type=Path, required=True)
     parser.add_argument("--dossier-root", type=Path, default=None)
@@ -3506,6 +3632,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--operator", default="admin_cli")
     parser.add_argument("--evidence-note", default="")
     args = parser.parse_args(argv)
+    eff_env_tag = args.env_tag or (
+        "live" if args.mode == "LIVE" else (os.environ.get("ASTRA_EXEC_ENV_TAG") or "tn")
+    )
+    eff_base_url = args.base_url or os.environ.get("ASTRA_EXEC_BASE_URL") or (
+        MAINNET_BASE_URL if args.mode == "LIVE" else TESTNET_BASE_URL
+    )
 
     if args.admin_resolve_unknown_cmd:
         st_admin = ExecutionStore(args.db)
@@ -3536,20 +3668,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     if _is_posix_runtime() and args.mode != "SHADOW_ONLY" and not args.once and args.control_socket is None:
         raise EnvironmentGuardError("CONTROL_SOCKET_REQUIRED_ON_POSIX_NON_SHADOW")
 
-    cid = os.environ.get("DERIBIT_EXEC_CLIENT_ID")
-    csec = os.environ.get("DERIBIT_EXEC_CLIENT_SECRET")
+    cid = _load_credential_secret("deribit_exec_client_id", "DERIBIT_EXEC_CLIENT_ID")
+    csec = _load_credential_secret("deribit_exec_client_secret", "DERIBIT_EXEC_CLIENT_SECRET")
+    ro_tok_path: Path | None = None
+    cred_dir = os.environ.get("CREDENTIALS_DIRECTORY")
+    if cred_dir and (Path(cred_dir) / "deribit_exec_readonly_token").is_file():
+        ro_tok_path = Path(cred_dir) / "deribit_exec_readonly_token"
+    elif os.environ.get("DERIBIT_EXEC_READONLY_TOKEN_FILE"):
+        ro_tok_path = Path(os.environ["DERIBIT_EXEC_READONLY_TOKEN_FILE"])
     adapter = DeribitRestAdapter(
         mode=args.mode,
-        base_url=args.base_url,
+        base_url=eff_base_url,
         client_id=cid,
         client_secret=csec,
         subaccount_id=args.subaccount_id,
+        allow_main_account=args.allow_main_account,
+        read_only_token_file=ro_tok_path,
     )
     store = ExecutionStore(args.db)
     try:
         coord = ExecutionCoordinator(
             mode=args.mode,
-            env_tag=args.env_tag,
+            env_tag=eff_env_tag,
             subaccount_id=args.subaccount_id,
             store=store,
             adapter=adapter,

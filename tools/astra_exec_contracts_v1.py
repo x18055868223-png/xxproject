@@ -15,7 +15,7 @@ BEHAVIOR_SPEC_VERSION = "live-exec-behavior@1.2.0"
 SAT = Decimal("0.00000001")
 ZERO = Decimal("0")
 ONE = Decimal("1")
-ALLOWED_MODES = ("SHADOW_ONLY", "DRY_RUN", "TESTNET")  # LIVE_MAINNET explicitly outside pre-live authorization
+ALLOWED_MODES = ("SHADOW_ONLY", "DRY_RUN", "TESTNET", "LIVE")  # Default SHADOW_ONLY; LIVE requires explicit Mainnet & account binding
 ORDER_PURPOSES = ("EP", "ES", "TP", "RX", "LX")
 
 
