@@ -701,7 +701,8 @@ def save_link(d, hand, proof, request, result):
 
 _RETRYABLE_LOCK_ERRORS = {
     'tracking_quote_stale_or_unsynced', 'tracking_snapshot_rotated',
-    'exact_current_contract_not_found', 'quote_held_not_current', 'lock_snapshot_not_retained',
+    'exact_current_contract_not_found', 'original_contract_not_found',
+    'quote_held_not_current', 'lock_snapshot_not_retained',
     'DERIBIT_HTTP_429', 'deribit_rate_limited', 'candidate_temporarily_unavailable',
     'quote_unavailable', 'public_quote_stale', 'TimeoutError', 'URLError',
     'ConnectionError', 'OSError',
@@ -711,6 +712,30 @@ _RETRYABLE_LOCK_ERRORS = {
 def _link_blocked(root):
     blocked = optional(root / 'final_block.json') or optional(root / 'blocked.json')
     return blocked if blocked and blocked.get('reason') not in _RETRYABLE_LOCK_ERRORS else None
+
+
+def _resolve_lock_failure_reason(code, failure_hint):
+    if code != 'exact_current_contract_not_found' or not failure_hint:
+        return code
+    hint = str(failure_hint).strip()
+    if hint in _RETRYABLE_LOCK_ERRORS:
+        return hint
+    low = hint.lower()
+    if '429' in low or 'rate_limit' in low or 'cooldown' in low:
+        return 'DERIBIT_HTTP_429'
+    if 'instrument_not_found' in low or 'no_such_instrument' in low or 'not_found' in low:
+        return 'original_contract_not_found'
+    if hint.startswith(('short_', 'long_', 'leg_', 'local_receipt_')):
+        return 'tracking_quote_stale_or_unsynced'
+    if 'timeouterror' in low or 'timed out' in low:
+        return 'TimeoutError'
+    if 'urlerror' in low:
+        return 'URLError'
+    if 'connectionerror' in low:
+        return 'ConnectionError'
+    if 'oserror' in low:
+        return 'OSError'
+    return 'quote_unavailable'
 
 
 def _link_with_fresh_quote(d, hand, service, plan=None):
@@ -730,21 +755,26 @@ def _link_with_fresh_quote(d, hand, service, plan=None):
         try:
             ref = service('refresh_quote', dict(dossier_id=hand.parent.parent.name, hand_id=hand.name))
             if isinstance(ref, dict) and ref.get('state') == 'QUOTE_UNAVAILABLE':
-                ref_err = ref.get('detail') or ref.get('error') or 'quote_unavailable'
+                ref_err = ref.get('error') or ref.get('detail') or 'quote_unavailable'
+                if ref_err == 'tracking_quote_stale_or_unsynced' and ref.get('detail'):
+                    ref_err = ref.get('detail')
         except (Blocked, OSError, ValueError, KeyError, TypeError) as exc:
-            ref_err = getattr(exc, 'code', None) or type(exc).__name__
+            ref_err = exc.code if isinstance(exc, Blocked) else type(exc).__name__
     res = link(d, hand, service, plan, _failure_hint=ref_err)
     if (res.get('state') == 'LINK_UNVERIFIED'
-            and ref_err != 'current_contract_changed'
+            and ref_err not in {'shadow_handoff_expired', 'contract_expired'}
+            and res.get('reason') not in {'DERIBIT_HTTP_429', 'deribit_rate_limited', 'original_contract_not_found'}
             and not (optional(root / 'link.json') or _link_blocked(root))):
         time.sleep(0.5)
         ref_err2 = None
         try:
             ref2 = service('refresh_quote', dict(dossier_id=hand.parent.parent.name, hand_id=hand.name))
             if isinstance(ref2, dict) and ref2.get('state') == 'QUOTE_UNAVAILABLE':
-                ref_err2 = ref2.get('detail') or ref2.get('error') or 'quote_unavailable'
+                ref_err2 = ref2.get('error') or ref2.get('detail') or 'quote_unavailable'
+                if ref_err2 == 'tracking_quote_stale_or_unsynced' and ref2.get('detail'):
+                    ref_err2 = ref2.get('detail')
         except (Blocked, OSError, ValueError, KeyError, TypeError) as exc:
-            ref_err2 = getattr(exc, 'code', None) or type(exc).__name__
+            ref_err2 = exc.code if isinstance(exc, Blocked) else type(exc).__name__
         res = link(d, hand, service, plan, _failure_hint=ref_err2)
     return res
 
@@ -825,7 +855,7 @@ def link(d, hand, service, plan=None, *, _failure_hint=None):
                 dossier.write(root / receipt, dossier.encode(blocked))
                 d.note(hand, 'LOCK_BLOCKED', exc.code)
             return blocked
-        reason = exc.code
+        reason = _resolve_lock_failure_reason(exc.code, _failure_hint)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         reason = type(exc).__name__
     else:

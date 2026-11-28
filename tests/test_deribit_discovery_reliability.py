@@ -817,19 +817,13 @@ def test_nov20_candidate_rotation_never_mislocks_new_contract_and_reproduces_sha
         assert res_without_refresh["reason"] == "exact_current_contract_not_found"
         assert len(wb.locked_candidates.list()) == 0
 
-        # 2. Rotation STILL blocks refresh_quote and lock cleanly without ever mislocking 104000-C
-        ref_rot = service("refresh_quote", {"dossier_id": hand.parent.parent.name, "hand_id": hand.name})
-        assert ref_rot["state"] == "QUOTE_UNAVAILABLE" and ref_rot["error"] == "exact_current_contract_not_found"
-        assert tracking.link(d, hand, service, RULE) == {"state": "LINK_UNVERIFIED", "reason": "exact_current_contract_not_found"}
-        assert len(wb.locked_candidates.list()) == 0
-
-        # 3. Direct lock_candidate with mismatched snapshot_id vs candidate_id rejects lock_candidate_mismatch
+        # 2. Direct lock_candidate with mismatched snapshot_id vs candidate_id rejects lock_candidate_mismatch
         with pytest.raises(workbench.WorkbenchError) as exc_info:
             wb.lock_candidate(accepted_snap["candidate_id"], call_rot["snapshot"]["snapshot_id"],
                               "mismatch-key", authorization="Bearer secret")
         assert exc_info.value.code == "lock_candidate_mismatch"
 
-        # 4. Also verify _link_with_fresh_quote records QUOTE_UNAVAILABLE detail cleanly
+        # 3. Also verify _link_with_fresh_quote preserves QUOTE_UNAVAILABLE real reason instead of candidate mismatch
         refresh_results = []
         def wrap_service(action, payload):
             if action == "refresh_quote":
@@ -839,18 +833,14 @@ def test_nov20_candidate_rotation_never_mislocks_new_contract_and_reproduces_sha
         monkeypatch.setattr(tracking.time, "sleep", lambda _s: None)
         masked = tracking._link_with_fresh_quote(d, hand, wrap_service, RULE)
         assert len(refresh_results) >= 1
-        assert masked == {"state": "LINK_UNVERIFIED", "reason": "exact_current_contract_not_found"}
+        assert masked == {"state": "LINK_UNVERIFIED", "reason": "public_quote_stale"}
 
-        # 5. Concurrent shared-view overwrite fix: once 103000-C is current again, refresh_quote succeeds
-        # and even if a concurrent background refresh transiently blanks _current_view (no conflicting rotation),
-        # the fresh slot lets exact 103000-C lock cleanly while still honoring <=5s confirm_quote & <=2s skew.
-        clock[0] += 305_000
-        spot_box["spot"] = 100_000.0
-        write_fmz(snaps, native_gate(ts=clock[0] - 1000), now=clock[0])
-        v_back = wb.refresh(now_ms=clock[0], record_daily=False)
-        assert next(c for c in v_back["candidates"] if c["side"] == "call")["snapshot"]["contract"]["short_instrument"] == "BTC-23NOV26-103000-C"
+        # 4. Contract-frozen fix: while workbench STILL shows rotated 104000-C, refresh_quote refreshes ONLY
+        # exact accepted 103000-C into request_key slot without overwriting _current_view (stays 104000-C),
+        # and even a subsequent concurrent _current_view clear still locks exact 103000-C cleanly!
         ref_ok = service("refresh_quote", {"dossier_id": hand.parent.parent.name, "hand_id": hand.name})
         assert ref_ok["state"] == "QUOTE_REFRESHED"
+        assert next(c for c in wb._current_view["candidates"] if c["side"] == "call")["snapshot"]["contract"]["short_instrument"] == "BTC-23NOV26-104000-C"
         with wb._view_lock:
             wb._current_view["candidates"] = []  # simulate transient gap clearing _current_view before lock()
         recovered_race = tracking.link(d, hand, service, RULE)
@@ -858,6 +848,9 @@ def test_nov20_candidate_rotation_never_mislocks_new_contract_and_reproduces_sha
         assert recovered_race["lock_mode"] == "DELAYED_LOCK" and recovered_race["delayed_lock"] is True
         assert len(wb.locked_candidates.list()) == 1
         assert wb.locked_candidates.detail(wb.locked_candidates.list()[0]["episode_id"])["episode"]["contract"]["short_instrument"] == "BTC-23NOV26-103000-C"
+        # Idempotent retry reuses the same receipt and never creates a second episode
+        assert tracking._link_with_fresh_quote(d, hand, service, RULE) == recovered_race
+        assert len(wb.locked_candidates.list()) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1243,6 +1236,13 @@ def _build_frozen_accept_hand(
     orig_quote_tr = workbench.public_quote.public_transport
 
     def custom_quote_tr(path, params):
+        if call_429.get("on") and path == "public/get_order_book" and params["instrument_name"].endswith("-C"):
+            raise discovery.DeribitPublicError(
+                "DERIBIT_HTTP_429",
+                "DERIBIT_HTTP_429: too_many_requests",
+                status=429,
+                retry_after_ms=10_000,
+            )
         res = orig_quote_tr(path, params)
         if path == "public/get_order_book" and quote_bid_103k and params["instrument_name"].endswith("-103000-C"):
             res = dict(res)
@@ -1316,8 +1316,10 @@ def test_pending_lock_429_recovery_delayed_lock_and_idempotent_polls(tmp_path, m
     assert pending["deadline_ms"] == min(expiry, decided_ms + 60 * M)
     assert pending["decided_at_ms"] == decided_ms
     assert pending["contract"]["short_instrument"] == "BTC-23NOV26-103000-C"
+    assert first["reason"] == "DERIBIT_HTTP_429"
+    assert pending["last_failure_reason"] == "DERIBIT_HTTP_429"
     assert len(pending["attempts"]) >= 1 and all(
-        a["detail"] == "candidate_temporarily_unavailable" for a in pending["attempts"]
+        "DERIBIT_HTTP_429" in (a.get("detail") or a.get("reason") or "") for a in pending["attempts"]
     )
     assert tracking.audit_record(hand, clock[0], {})["tracking_state"] == "PENDING_LOCK"
 
@@ -1406,7 +1408,8 @@ def test_pending_lock_restart_persistence_and_15m_legacy_compat(tmp_path, monkey
 
 
 def test_pending_lock_rotation_persistent_missing_timeout_and_declared_validity(tmp_path, monkeypatch):
-    # Case A: Contract changed + timeout at 60m -> never mislocks 104000-C, terminates cleanly
+    # Case A: Workbench rotated to fresh 104000-C while original accepted 103000-C genuinely vanished
+    # (instrument_not_found) -> reports original_contract_not_found, never mislocks 104000-C, terminates at 60m
     expiry = SLOT_16 + 16 * HOUR
     slot = expiry - 16 * HOUR
     clock = [slot + 2 * M]
@@ -1415,12 +1418,24 @@ def test_pending_lock_rotation_persistent_missing_timeout_and_declared_validity(
     wb, snaps, d, hand, _, _ = _build_frozen_accept_hand(
         tmp_path / "case_a", monkeypatch, expiry=expiry, clock=clock, call_429=mode, spot_box=spot,
     )
+    orig_case_a_tr = workbench.public_quote.public_transport
+
+    def missing_103k_tr(path, params):
+        if path == "public/get_order_book" and params["instrument_name"].endswith("-103000-C"):
+            raise discovery.DeribitPublicError(
+                "instrument_not_found",
+                "DERIBIT_ERROR 13020: instrument_not_found",
+                status=400,
+            )
+        return orig_case_a_tr(path, params)
+
+    monkeypatch.setattr(workbench.public_quote, "public_transport", missing_103k_tr)
     clock[0] += 305_000
     spot["spot"] = 101_000.0  # discovery rotates Call to 104000-C while decision accepted 103000-C
     write_fmz(snaps, native_gate(ts=clock[0] - 1000), now=clock[0])
     wb.refresh(now_ms=clock[0], record_daily=False)
     with serving(wb) as base:
-        assert tracking._link_with_fresh_quote(d, hand, post(base, wb), RULE)["reason"] == "exact_current_contract_not_found"
+        assert tracking._link_with_fresh_quote(d, hand, post(base, wb), RULE)["reason"] == "original_contract_not_found"
     assert len(wb.locked_candidates.list()) == 0
 
     clock[0] += 61 * M  # cross 60-minute validity deadline

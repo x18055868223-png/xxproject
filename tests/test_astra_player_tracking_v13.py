@@ -1746,3 +1746,216 @@ def test_audit_decouples_tracking_failure_and_unifies_due_current_selection(tmp_
     assert idx_bad['hands'][0]['hand_id'] == h28.name
 
 
+def _wire_frozen_a_rotating_workbench(tmp_path):
+    """Build a valid Accept(A) hand on workbench, with controllable discovery rotation and exact-leg quotes."""
+    from tools import astra_underwriting_discovery_v20 as disc
+    from tools import astra_underwriting_public_quote_v20 as pub_q
+    from test_astra_workbench_v20 import option_meta
+
+    wb, d, hand, now, expiry = sample(tmp_path, 'Accept / Call')
+    state = {
+        'current_call': (103_000, 105_000),
+        'spot': 100_000.0,
+        'a_mode': 'live',
+        'a_short_bid': 0.007,
+        'a_long_ask': 0.002,
+        'b_short_bid': 0.010,
+        'b_long_ask': 0.002,
+    }
+
+    def _insts():
+        c_short, c_long = state['current_call']
+        rows = []
+        for s_strike, delta in ((97_000, -0.35), (95_000, -0.15)):
+            r = option_meta(f'BTC-26SEP26-{s_strike}-P', 'put', s_strike)
+            r['greeks'] = {'delta': delta}
+            r['delta_observed_at_ms'] = now[0] - 1000
+            rows.append(r)
+        for s_strike, delta in ((c_short, 0.35), (c_long, 0.15)):
+            r = option_meta(f'BTC-26SEP26-{s_strike}-C', 'call', s_strike)
+            r['greeks'] = {'delta': delta}
+            r['delta_observed_at_ms'] = now[0] - 1000
+            rows.append(r)
+        return rows
+
+    def rotating_discovery(*, now_ms):
+        return disc.discover(_insts(), state['spot'], now_ms, quantity_btc=1.0, width_usd=2000.0)
+
+    def pair_quote(short_instrument, long_instrument, quantity_btc, *, now_ms, allow_partial=False):
+        del allow_partial
+        metas = {}
+        for s_strike in (95_000, 97_000):
+            metas[f'BTC-26SEP26-{s_strike}-P'] = option_meta(f'BTC-26SEP26-{s_strike}-P', 'put', s_strike)
+        for s_strike in (103_000, 104_000, 105_000, 106_000, 107_000):
+            metas[f'BTC-26SEP26-{s_strike}-C'] = option_meta(f'BTC-26SEP26-{s_strike}-C', 'call', s_strike)
+
+        def fetch(path, params):
+            name = params['instrument_name']
+            if path == 'public/get_instrument':
+                if state['a_mode'] == 'instrument_not_found' and name == 'BTC-26SEP26-103000-C':
+                    raise ValueError('instrument_not_found')
+                return dict(metas[name])
+            if name in {'BTC-26SEP26-103000-C', 'BTC-26SEP26-105000-C'}:
+                if state['a_mode'] == 'depth_insufficient' and name == 'BTC-26SEP26-103000-C':
+                    return {
+                        'instrument_name': name, 'state': 'open', 'timestamp': now_ms,
+                        'index_price': state['spot'], 'bids': [[state['a_short_bid'], 0.2]],
+                        'asks': [[round(state['a_short_bid'] + 0.001, 6), 1.0]],
+                    }
+                if state['a_mode'] == 'instrument_not_found' and name == 'BTC-26SEP26-103000-C':
+                    raise RuntimeError('instrument_not_found')
+                if state['a_mode'] == 'rate_limited' and name == 'BTC-26SEP26-103000-C':
+                    raise RuntimeError('DERIBIT_HTTP_429: too_many_requests')
+                bid = state['a_short_bid'] if name == 'BTC-26SEP26-103000-C' else max(0.001, state['a_long_ask'] - 0.001)
+                ask = round(bid + 0.001, 6) if name == 'BTC-26SEP26-103000-C' else state['a_long_ask']
+            else:
+                bid = state['b_short_bid'] if name == short_instrument else max(0.001, state['b_long_ask'] - 0.001)
+                ask = round(bid + 0.001, 6) if name == short_instrument else state['b_long_ask']
+            return {
+                'instrument_name': name, 'state': 'open', 'timestamp': now_ms,
+                'index_price': state['spot'], 'bids': [[bid, 1.0]], 'asks': [[ask, 1.0]],
+            }
+
+        return pub_q.capture_candidate(
+            short_instrument, long_instrument, quantity_btc, transport=fetch, clock_ms=lambda: now_ms,
+        )
+
+    wb.discovery_capture = rotating_discovery
+    wb.quote_capture = pair_quote
+    return wb, d, hand, now, expiry, state
+
+
+def test_shadow_lock_frozen_contract_a_while_workbench_shows_b_and_updates_price(tmp_path):
+    wb, d, hand, now, _, state = _wire_frozen_a_rotating_workbench(tmp_path)
+    # Workbench rotates to B (104000-C / 106000-C) after Accept(A=103000-C/105000-C), and A live credit rises to 0.011
+    now[0] += 10_000
+    state['current_call'] = (104_000, 106_000)
+    state['a_short_bid'] = 0.013
+    state['a_long_ask'] = 0.002
+    v_rot = wb.refresh(now_ms=now[0], record_daily=False)
+    call_b = next(c for c in v_rot['candidates'] if c['side'] == 'call')['snapshot']
+    assert call_b['contract']['short_instrument'] == 'BTC-26SEP26-104000-C'
+
+    with serving(wb) as base:
+        service = post(base, wb)
+        receipt = tracking._link_with_fresh_quote(d, hand, service, RULE)
+        assert receipt['state'] == 'SHADOW_LOCK_CREATED'
+        assert receipt['execution_allowed'] is False
+        assert receipt['t0']['quote']['credit_btc'] == pytest.approx(0.011)
+        ep = wb.locked_candidates.detail(receipt['t0']['tracker_episode_id'])['episode']
+        assert ep['contract']['short_instrument'] == 'BTC-26SEP26-103000-C'
+        assert ep['contract']['long_instrument'] == 'BTC-26SEP26-105000-C'
+        # Workbench view MUST still display B (shadow quote slot never overwrites global workbench candidates)
+        view_page = get(base, '/api/workbench')
+        assert next(c for c in view_page['candidates'] if c['side'] == 'call')['snapshot']['contract']['short_instrument'] == 'BTC-26SEP26-104000-C'
+        # Native shadow hold quote tracks locked A cleanly
+        quoted = service('quote', {'dossier_id': hand.parent.parent.name, 'hand_id': hand.name})
+        assert quoted['state'] == 'QUOTE_CAPTURED'
+        assert quoted['latest_point']['candidate']['snapshot']['contract']['short_instrument'] == 'BTC-26SEP26-103000-C'
+        # Manual lock path still locks displayed B independently
+        manual_b = wb.lock_candidate(call_b['candidate_id'], call_b['snapshot_id'], 'manual-b-key', authorization='Bearer secret')
+        assert manual_b['created'] is True
+        assert manual_b['episode']['contract']['short_instrument'] == 'BTC-26SEP26-104000-C'
+        actors = sorted(r['lock_actor'] for r in wb.locked_candidates.list())
+        assert actors == ['AI_SHADOW', 'USER']
+
+
+def test_shadow_lock_survives_second_rotation_after_refresh_quote_and_is_idempotent(tmp_path):
+    wb, d, hand, now, _, state = _wire_frozen_a_rotating_workbench(tmp_path)
+    # 1. Rotate workbench to B, refresh exact A quote into request_key slot
+    now[0] += 10_000
+    state['current_call'] = (104_000, 106_000)
+    state['a_short_bid'] = 0.012
+    wb.refresh(now_ms=now[0], record_daily=False)
+    with serving(wb) as base:
+        service = post(base, wb)
+        ref = service('refresh_quote', {'dossier_id': hand.parent.parent.name, 'hand_id': hand.name})
+        assert ref['state'] == 'QUOTE_REFRESHED'
+        # 2. Rotate workbench AGAIN to C (105000-C / 107000-C) within 1s before calling lock()
+        now[0] += 1_000
+        state['current_call'] = (105_000, 107_000)
+        wb.refresh(now_ms=now[0], record_daily=False)
+        assert next(c for c in wb._current_view['candidates'] if c['side'] == 'call')['snapshot']['contract']['short_instrument'] == 'BTC-26SEP26-105000-C'
+        first = tracking.link(d, hand, service, RULE)
+        assert first['state'] == 'SHADOW_LOCK_CREATED'
+        assert first['t0']['quote']['credit_btc'] == pytest.approx(0.010)
+        ep = wb.locked_candidates.detail(first['t0']['tracker_episode_id'])['episode']
+        assert ep['contract']['short_instrument'] == 'BTC-26SEP26-103000-C'
+        # Workbench remains C
+        assert next(c for c in wb._current_view['candidates'] if c['side'] == 'call')['snapshot']['contract']['short_instrument'] == 'BTC-26SEP26-105000-C'
+        # Duplicate lock & sync_open reuse exact same episode and receipt
+        raw_again = service('lock', {'dossier_id': hand.parent.parent.name, 'hand_id': hand.name})
+        assert raw_again['state'] == 'ALREADY_LINKED'
+        assert raw_again['episode']['episode_id'] == first['t0']['tracker_episode_id']
+        assert raw_again['t0'] == first['t0']
+        assert tracking._link_with_fresh_quote(d, hand, service, RULE) == first
+        assert len(wb.locked_candidates.list()) == 1
+
+
+@pytest.mark.parametrize('failure_mode,expected_state,expected_reason', [
+    ('depth_insufficient', 'LINK_UNVERIFIED', 'tracking_quote_stale_or_unsynced'),
+    ('instrument_not_found', 'LINK_UNVERIFIED', 'original_contract_not_found'),
+    ('t0_breach', 'LOCK_BLOCKED', 't0_outside_condition_no_longer_holds'),
+    ('expired', 'LOCK_BLOCKED', 'shadow_handoff_expired'),
+])
+def test_shadow_lock_missing_quote_t0_breach_and_expiry_never_lock_b(tmp_path, monkeypatch, failure_mode, expected_state, expected_reason):
+    monkeypatch.setattr(tracking.time, 'sleep', lambda _s: None)
+    wb, d, hand, now, expiry, state = _wire_frozen_a_rotating_workbench(tmp_path)
+    # Workbench has a fresh, eligible B candidate (104000-C / 106000-C) on the same side
+    now[0] += 10_000
+    state['current_call'] = (104_000, 106_000)
+    if failure_mode == 'depth_insufficient':
+        state['a_mode'] = 'depth_insufficient'
+    elif failure_mode == 'instrument_not_found':
+        state['a_mode'] = 'instrument_not_found'
+    elif failure_mode == 't0_breach':
+        state['spot'] = 103_000.0  # Breaches A (103k) strict-outside while B (104k) is still outside!
+    elif failure_mode == 'expired':
+        now[0] = expiry - 1_000
+        state['a_mode'] = 'live'
+    wb.refresh(now_ms=now[0], record_daily=False)
+    if failure_mode == 'expired':
+        now[0] = tracking.accepted(hand)['deadline_ms'] + 1_000
+    with serving(wb) as base:
+        res = tracking._link_with_fresh_quote(d, hand, post(base, wb), RULE)
+    assert res['state'] == expected_state
+    assert res['reason'] == expected_reason
+    assert len(wb.locked_candidates.list()) == 0
+    assert dossier.read(hand / 'decision.json')['judgment']['action'] == 'Accept'
+    # Recovery proof for transient depth failure: once A book recovers within window, locks A (never B)
+    if failure_mode == 'depth_insufficient':
+        state['a_mode'] = 'live'
+        now[0] += 1_000
+        with serving(wb) as base:
+            rec = tracking._link_with_fresh_quote(d, hand, post(base, wb), RULE)
+        assert rec['state'] == 'SHADOW_LOCK_CREATED'
+        assert rec['lock_mode'] == 'DELAYED_LOCK'
+        assert wb.locked_candidates.list()[0]['contract']['short_instrument'] == 'BTC-26SEP26-103000-C'
+
+
+@pytest.mark.parametrize('view_age_ms,a_mode,expected_reason', [
+    (1_000, 'instrument_not_found', 'original_contract_not_found'),
+    (1_000, 'depth_insufficient', 'tracking_quote_stale_or_unsynced'),
+    (1_000, 'rate_limited', 'DERIBIT_HTTP_429'),
+    (20_000, 'rate_limited', 'DERIBIT_HTTP_429'),
+    (20_000, 'instrument_not_found', 'original_contract_not_found'),
+])
+def test_failed_refresh_quote_never_locks_pre_failure_current_view_or_masks_reason(
+    tmp_path, monkeypatch, view_age_ms, a_mode, expected_reason
+):
+    """Non-rotated _current_view must not bypass failed live refresh_quote (<=5s) or mask its reason (5-30s)."""
+    monkeypatch.setattr(tracking.time, 'sleep', lambda _s: None)
+    wb, d, hand, now, _, state = _wire_frozen_a_rotating_workbench(tmp_path)
+    # _current_view STILL shows A (103000-C / 105000-C) from the initial refresh, then A fails live on refresh_quote.
+    now[0] += view_age_ms
+    state['a_mode'] = a_mode
+    with serving(wb) as base:
+        res = tracking._link_with_fresh_quote(d, hand, post(base, wb), RULE)
+    assert res['state'] == 'LINK_UNVERIFIED'
+    assert res['reason'] == expected_reason
+    assert len(wb.locked_candidates.list()) == 0
+    assert dossier.read(hand / 'decision.json')['judgment']['action'] == 'Accept'
+
+
+
+

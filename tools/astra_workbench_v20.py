@@ -3864,6 +3864,33 @@ class AstraWorkbench:
         except Exception:
             return point
 
+    def _build_shadow_lock_point(
+        self,
+        item: Mapping[str, Any],
+        fact: Mapping[str, Any],
+        gate: Mapping[str, Any],
+        now_ms: int,
+        raw_payload: Mapping[str, Any] | None,
+    ) -> Mapping[str, Any]:
+        """Build a self-contained lock point for one shadow capture without mutating view caches."""
+        displayed = self._apply_current_review_availability(
+            {"candidates": [dict(item)], "space_gate": gate, "market_context": fact},
+            now_ms,
+        )["candidates"][0]
+        snapshot = displayed["snapshot"]
+        packet = candidate_asof.build_packet(
+            snapshot,
+            raw_payload=raw_payload,
+            source_receipts=candidate_asof.collect_source_receipts(snapshot, self.data_engine),
+            interval_ms=max(1, self.config.locked_sample_interval_ms),
+        )
+        point = {
+            "candidate": deepcopy(displayed),
+            "packet": packet,
+            "recorded_at_ms": max(now_ms, int(snapshot["market"]["valuation_ts_ms"])),
+        }
+        return self._with_expiry_levels(point)
+
     def _lock_ready_point(self, point: Mapping[str, Any]) -> Mapping[str, Any]:
         """The point a lock takes as t0. Since the refresh composes WPEM only for contracts
         already locked (2026-10-15), a displayed point lacks the program's questions and research
@@ -5247,40 +5274,39 @@ class AstraWorkbench:
             if now >= proof["deadline_ms"]:
                 raise player_tracking.Blocked("shadow_handoff_expired")
             contract = player_tracking.contract_fields(proof["contract"])
+            if now >= int(contract["expiry_ms"]):
+                raise player_tracking.Blocked("contract_expired")
+            key = proof["origin"]["request_key"]
+
+            def _record_unavailable(err_code: str, detail_text: str | None = None) -> dict[str, Any]:
+                failed_at = max(now, self.clock_ms())
+                with self._view_lock:
+                    self._shadow_quote_slots[key] = {
+                        "status": "unavailable",
+                        "contract": dict(contract),
+                        "error": err_code,
+                        **({"detail": detail_text} if detail_text else {}),
+                        "recorded_at_ms": failed_at,
+                    }
+                    while len(self._shadow_quote_slots) > 16:
+                        self._shadow_quote_slots.pop(next(iter(self._shadow_quote_slots)))
+                return {
+                    "state": "QUOTE_UNAVAILABLE",
+                    "error": err_code,
+                    **({"detail": detail_text} if detail_text else {}),
+                    "execution_allowed": False,
+                }
+
             # Pre-warm heavy caches BEFORE grabbing the live orderbook so total book age stays << 5000ms.
             self._ledger_state()
             with self._view_lock:
-                view = deepcopy(self._current_view or {})
-                held_ids = set(self._held_snapshot_ids)
-            view_cands = [c for c in (view.get("candidates") or []) if isinstance(c, Mapping)]
-            same_side = [c for c in view_cands if c.get("side") == contract["side"]]
-            side_snap = (same_side[0].get("snapshot") if same_side and isinstance(same_side[0].get("snapshot"), Mapping) else None)
-            if side_snap is not None:
-                if side_snap.get("snapshot_id") in held_ids:
-                    return {
-                        "state": "QUOTE_UNAVAILABLE",
-                        "error": "quote_held_not_current",
-                        "execution_allowed": False,
-                    }
-                if player_tracking.contract_fields(side_snap["contract"]) != contract:
-                    return {
-                        "state": "QUOTE_UNAVAILABLE",
-                        "error": "exact_current_contract_not_found",
-                        "detail": "current_contract_changed",
-                        "execution_allowed": False,
-                    }
-            else:
-                return {
-                    "state": "QUOTE_UNAVAILABLE",
-                    "error": "candidate_temporarily_unavailable",
-                    "execution_allowed": False,
-                }
+                view_projection = deepcopy((self._current_view or {}).get("btc_map_projection"))
             fact = self.latest_fact(now)
             gate = self.space_gate_view(fact, now)
             try:
                 projection = self._build_btc_map_projection(now, fact, collect_slow_sources=False)
             except Exception:
-                projection = view.get("btc_map_projection")
+                projection = view_projection
             if self.config.expiry_gamma_enabled:
                 try:
                     self.refresh_expiry_gamma(now_ms=now, force=False)
@@ -5293,62 +5319,46 @@ class AstraWorkbench:
                     contract["side"], self._locked_binding(contract), fact, gate, capture_now,
                     btc_map_projection=projection, tracking=False, sink=sink)
             except Exception as exc:
-                return {"state": "QUOTE_UNAVAILABLE", "error": type(exc).__name__, "execution_allowed": False}
+                return _record_unavailable(type(exc).__name__)
             snap = item.get("snapshot")
             if not isinstance(snap, Mapping):
                 gaps = item.get("capture_gaps") or (item.get("discovery") or {}).get("gap_reasons") or []
                 err = str(item.get("error") or (gaps[0] if gaps else "") or "quote_capture_unavailable")
-                return {"state": "QUOTE_UNAVAILABLE", "error": err, "execution_allowed": False}
+                review_reasons = (item.get("review_gate") or {}).get("reasons") or []
+                for exc_name in ("TimeoutError", "URLError", "ConnectionError", "OSError"):
+                    if exc_name in review_reasons and exc_name not in err:
+                        return _record_unavailable(exc_name, err)
+                return _record_unavailable(err)
             if player_tracking.contract_fields(snap["contract"]) != contract:
-                return {"state": "QUOTE_UNAVAILABLE", "error": "contract_mismatch", "execution_allowed": False}
+                return _record_unavailable("contract_mismatch")
             refreshed_at = max(capture_now, self.clock_ms())
-            self._remember_lockable({"candidates": [item], "space_gate": gate, "market_context": fact},
-                                    refreshed_at, payloads=sink)
-            with self._view_lock:
-                point = self._lockable_points.get(snap["snapshot_id"])
-            if isinstance(point, Mapping):
-                ready_point = self._with_expiry_levels(point)
-                with self._view_lock:
-                    if snap["snapshot_id"] in self._lockable_points:
-                        self._lockable_points[snap["snapshot_id"]] = ready_point
-                if isinstance((ready_point.get("candidate") or {}).get("snapshot"), Mapping):
-                    item = dict(ready_point["candidate"])
-            post_ready_at = max(refreshed_at, self.clock_ms())
             try:
-                player_tracking.confirm_quote(snap, post_ready_at)
+                ready_point = self._build_shadow_lock_point(
+                    item, fact, gate, refreshed_at, sink.get(snap["snapshot_id"])
+                )
+            except Exception as exc:
+                return _record_unavailable("packet_validation_failed:" + type(exc).__name__)
+            ready_snap = (ready_point.get("candidate") or {}).get("snapshot") or snap
+            post_ready_at = max(refreshed_at, self.clock_ms())
+            if post_ready_at >= int(ready_snap["contract"]["expiry_ms"]):
+                return _record_unavailable("contract_expired")
+            try:
+                player_tracking.confirm_quote(ready_snap, post_ready_at)
             except player_tracking.Blocked as exc:
-                return {"state": "QUOTE_UNAVAILABLE", "error": exc.code, "execution_allowed": False}
+                quote_gaps = ((ready_snap.get("market") or {}).get("quote") or {}).get("gap_reasons") or []
+                return _record_unavailable(exc.code, str(quote_gaps[0]) if quote_gaps else None)
             with self._view_lock:
-                self._held_snapshot_ids.discard(snap["snapshot_id"])
-                self._shadow_quote_slots[proof["origin"]["request_key"]] = {
-                    "snapshot": deepcopy(snap),
+                self._shadow_quote_slots[key] = {
+                    "status": "ready",
+                    "snapshot": deepcopy(ready_snap),
+                    "point": deepcopy(ready_point),
                     "contract": dict(contract),
-                    "snapshot_id": snap["snapshot_id"],
+                    "snapshot_id": ready_snap["snapshot_id"],
                     "recorded_at_ms": post_ready_at,
                 }
                 while len(self._shadow_quote_slots) > 16:
                     self._shadow_quote_slots.pop(next(iter(self._shadow_quote_slots)))
-                current = self._current_view
-                if isinstance(current, dict):
-                    updated_candidates = []
-                    replaced = False
-                    for entry in current.get("candidates") or []:
-                        entry_snap = entry.get("snapshot") if isinstance(entry, Mapping) else None
-                        entry_side = (entry.get("side") if isinstance(entry, Mapping) else None)
-                        same_contract = (
-                            isinstance(entry_snap, Mapping)
-                            and player_tracking.contract_fields(entry_snap["contract"]) == contract
-                        )
-                        if same_contract or (entry_side == contract["side"] and not replaced):
-                            updated_candidates.append(deepcopy(item))
-                            replaced = True
-                        else:
-                            updated_candidates.append(entry)
-                    if not replaced:
-                        updated_candidates.append(deepcopy(item))
-                    current["candidates"] = updated_candidates
-            self.invalidate_view_body()
-            return {"state": "QUOTE_REFRESHED", "snapshot_id": snap["snapshot_id"], "execution_allowed": False}
+            return {"state": "QUOTE_REFRESHED", "snapshot_id": ready_snap["snapshot_id"], "execution_allowed": False}
         proof, request = player_tracking.request_proof(hand)
         origin = proof["origin"]
         key = origin["request_key"]
@@ -5363,33 +5373,86 @@ class AstraWorkbench:
                 if not request["requested_at_ms"] <= now < proof["deadline_ms"]:
                     raise player_tracking.Blocked("shadow_handoff_expired")
                 target_contract = player_tracking.contract_fields(proof["contract"])
+                if now >= int(target_contract["expiry_ms"]):
+                    raise player_tracking.Blocked("contract_expired")
+                slot_cand: tuple[dict[str, Any], dict[str, Any]] | None = None
+                slot_unavailable: dict[str, Any] | None = None
                 with self._view_lock:
-                    candidates = list((self._current_view or {}).get("candidates") or ())
-                    conflicting = any(
-                        isinstance(c, Mapping) and c.get("side") == target_contract["side"]
-                        and isinstance(c.get("snapshot"), Mapping)
-                        and player_tracking.contract_fields(c["snapshot"]["contract"]) != target_contract
-                        for c in candidates
+                    slot = self._shadow_quote_slots.get(key)
+                    if isinstance(slot, Mapping) and slot.get("contract") == target_contract:
+                        if slot.get("status") == "unavailable":
+                            slot_unavailable = deepcopy(dict(slot))
+                        elif (
+                            slot.get("status", "ready") == "ready"
+                            and isinstance(slot.get("snapshot"), Mapping)
+                            and isinstance(slot.get("point"), Mapping)
+                            and player_tracking.contract_fields(slot["snapshot"]["contract"]) == target_contract
+                            and ((slot["point"].get("candidate") or {}).get("snapshot") or {}).get("snapshot_id") == slot.get("snapshot_id")
+                        ):
+                            slot_cand = (deepcopy(dict(slot["snapshot"])), deepcopy(dict(slot["point"])))
+                    view_matches = [
+                        deepcopy(dict(c["snapshot"]))
+                        for c in ((self._current_view or {}).get("candidates") or ())
+                        if (
+                            isinstance(c, Mapping)
+                            and isinstance(c.get("snapshot"), Mapping)
+                            and player_tracking.contract_fields(c["snapshot"]["contract"]) == target_contract
+                        )
+                    ]
+                    view_snap = view_matches[0] if len(view_matches) == 1 else None
+                    view_held = bool(view_snap is not None and view_snap["snapshot_id"] in self._held_snapshot_ids)
+                    view_retained = bool(view_snap is not None and view_snap["snapshot_id"] in self._lockable_points)
+
+                def _is_fresh_quote(candidate_snap: Mapping[str, Any]) -> bool:
+                    try:
+                        player_tracking.confirm_quote(candidate_snap, now)
+                        return True
+                    except player_tracking.Blocked:
+                        return False
+
+                view_val_ts = ((view_snap.get("market") or {}).get("valuation_ts_ms") if isinstance(view_snap, Mapping) else None)
+                view_newer_than_failure = bool(
+                    slot_unavailable is None
+                    or (
+                        isinstance(view_val_ts, int)
+                        and isinstance(slot_unavailable.get("recorded_at_ms"), int)
+                        and view_val_ts > slot_unavailable["recorded_at_ms"]
                     )
-                    if conflicting:
-                        self._shadow_quote_slots.pop(key, None)
-                        choices = []
-                    else:
-                        choices = [c["snapshot"] for c in candidates if c.get("snapshot")
-                                   and player_tracking.contract_fields(c["snapshot"]["contract"]) == target_contract]
-                        if not choices:
-                            slot = self._shadow_quote_slots.get(key)
-                            if (isinstance(slot, Mapping) and slot.get("contract") == target_contract
-                                    and slot.get("snapshot_id") in self._lockable_points
-                                    and slot.get("snapshot_id") not in self._held_snapshot_ids):
-                                choices = [slot["snapshot"]]
-                if len(choices) != 1:
+                )
+
+                if slot_cand is not None and _is_fresh_quote(slot_cand[0]):
+                    snap, slot_point = slot_cand
+                elif view_snap is not None and view_newer_than_failure and not view_held and view_retained and _is_fresh_quote(view_snap):
+                    snap, slot_point = view_snap, None
+                elif slot_unavailable is not None and not view_newer_than_failure:
+                    slot_reason = player_tracking._resolve_lock_failure_reason(
+                        "exact_current_contract_not_found",
+                        slot_unavailable.get("error") or slot_unavailable.get("detail"),
+                    )
+                    if slot_reason != "quote_unavailable":
+                        raise player_tracking.Blocked(slot_reason)
+                    if view_snap is not None and not _is_fresh_quote(view_snap):
+                        raise player_tracking.Blocked("tracking_quote_stale_or_unsynced")
+                    raise player_tracking.Blocked("quote_unavailable")
+                elif slot_cand is not None:
+                    snap, slot_point = slot_cand
+                elif view_snap is not None:
+                    snap, slot_point = view_snap, None
+                else:
                     raise player_tracking.Blocked("exact_current_contract_not_found")
-                snap = choices[0]
-                result = self.lock_candidate(snap["candidate_id"], snap["snapshot_id"], key,
-                                             authorization=None, _shadow=(proof, request))
-                with self._view_lock:
-                    self._shadow_quote_slots.pop(key, None)
+                try:
+                    result = self.lock_candidate(
+                        snap["candidate_id"],
+                        snap["snapshot_id"],
+                        key,
+                        authorization=None,
+                        _shadow=(proof, request, slot_point),
+                    )
+                finally:
+                    with self._view_lock:
+                        cur_slot = self._shadow_quote_slots.get(key)
+                        if isinstance(cur_slot, Mapping) and cur_slot.get("status", "ready") == "ready":
+                            self._shadow_quote_slots.pop(key, None)
             if result is None:
                 return {"state": "LINK_UNVERIFIED", "execution_allowed": False}
             episode = result["episode"]
@@ -5474,7 +5537,10 @@ class AstraWorkbench:
         try:
             if source_episode_id and not candidate_id:
                 candidate_id = self.locked_candidates.detail(source_episode_id)["episode"]["candidate_id"]
-            origin = _shadow[0]["origin"] if _shadow else None
+            shadow_proof = _shadow[0] if _shadow else None
+            shadow_request = _shadow[1] if _shadow else None
+            shadow_point = _shadow[2] if (_shadow and len(_shadow) >= 3) else None
+            origin = shadow_proof["origin"] if _shadow else None
             existing = (self.locked_candidates.lookup_shadow_request(request_key, origin) if _shadow else
                         self.locked_candidates.lookup_request(request_key, candidate_id=candidate_id,
                             snapshot_id=snapshot_id, new_reference=new_reference, source_episode_id=source_episode_id))
@@ -5482,6 +5548,8 @@ class AstraWorkbench:
                 return {**existing, "llm_call_count": 0, "execution_allowed": False}
             if source_episode_id:
                 point = self.locked_candidates.retained_point(source_episode_id, snapshot_id)
+            elif _shadow and isinstance(shadow_point, Mapping):
+                point = deepcopy(dict(shadow_point))
             else:
                 with self._view_lock:
                     if snapshot_id in self._held_snapshot_ids:
@@ -5501,31 +5569,16 @@ class AstraWorkbench:
                 point = self._lock_ready_point(point)
             at = self.clock_ms()
             if _shadow:
-                proof, request = _shadow
                 snapshot = point["candidate"]["snapshot"]
-                target_contract = player_tracking.contract_fields(proof["contract"])
-                with self._view_lock:
-                    current = self._current_view or {}
-                    view_cands = [c for c in current.get("candidates", ()) if isinstance(c, Mapping)]
-                    conflicting = any(
-                        c.get("side") == target_contract["side"] and isinstance(c.get("snapshot"), Mapping)
-                        and player_tracking.contract_fields(c["snapshot"]["contract"]) != target_contract
-                        for c in view_cands
-                    )
-                    slot = self._shadow_quote_slots.get(request_key)
-                    slot_ok = bool(
-                        isinstance(slot, Mapping) and slot.get("snapshot_id") == snapshot_id and not conflicting
-                    )
-                    still_current = (
-                        any((c.get("snapshot") or {}).get("snapshot_id") == snapshot_id for c in view_cands)
-                        or slot_ok
-                    ) and snapshot_id not in self._held_snapshot_ids
-                if not still_current:
-                    raise player_tracking.Blocked("tracking_snapshot_rotated")
-                if not request["requested_at_ms"] <= at < proof["deadline_ms"]:
+                target_contract = player_tracking.contract_fields(shadow_proof["contract"])
+                if player_tracking.contract_fields(snapshot["contract"]) != target_contract:
+                    raise player_tracking.Blocked("exact_current_contract_not_found")
+                if at >= int(target_contract["expiry_ms"]):
+                    raise WorkbenchError(409, "contract_expired", "expired contract cannot start regular observation")
+                if not shadow_request["requested_at_ms"] <= at < shadow_proof["deadline_ms"]:
                     raise player_tracking.Blocked("shadow_handoff_expired")
                 player_tracking.confirm_quote(snapshot, at)
-                player_tracking.condition_at_t0(proof, request["condition"], snapshot, at)
+                player_tracking.condition_at_t0(shadow_proof, shadow_request["condition"], snapshot, at)
             try:
                 result = self.locked_candidates.lock(point, request_key=request_key, now_ms=at,
                                                      new_reference=new_reference, source_episode_id=source_episode_id,
