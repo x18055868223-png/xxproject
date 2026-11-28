@@ -1321,22 +1321,26 @@ def test_pending_lock_429_recovery_delayed_lock_and_idempotent_polls(tmp_path, m
     )
     assert tracking.audit_record(hand, clock[0], {})["tracking_state"] == "PENDING_LOCK"
 
-    # Several natural refreshes while 429 persists: records retries, never locks wrong side or backfills
+    # Several natural refreshes + sync_open ticks while 429 persists: records retries, never locks wrong side or backfills
     for step_m in (5, 10, 15):
         clock[0] += step_m * M
         write_fmz(snaps, native_gate(ts=clock[0] - 1000), now=clock[0])
         wb.refresh(now_ms=clock[0], record_daily=False)
+        with serving(wb) as base:
+            tracking.sync_open(d, post(base, wb))
         assert not (hand / "tracking" / "link.json").exists()
         assert wb.locked_candidates.list() == []
     pending_mid = tracking.load(hand / "tracking" / "pending_lock.json")
     assert pending_mid["state"] == "PENDING_LOCK" and len(pending_mid["attempts"]) >= 4
 
-    # Provider recovers at ~decided+36m with updated live bid (0.018): natural wb.refresh() locks exact 103000-C!
+    # Provider recovers at ~decided+36m with updated live bid (0.018): sync_open locks exact 103000-C!
     clock[0] += 6 * M
     mode["on"] = False
     q_bid["bid"] = 0.018
     write_fmz(snaps, native_gate(ts=clock[0] - 1000), now=clock[0])
     wb.refresh(now_ms=clock[0], record_daily=False)
+    with serving(wb) as base:
+        tracking.sync_open(d, post(base, wb))
 
     link_rec = tracking.load(hand / "tracking" / "link.json")
     assert link_rec["state"] == "SHADOW_LOCK_CREATED"
@@ -1386,6 +1390,8 @@ def test_pending_lock_restart_persistence_and_15m_legacy_compat(tmp_path, monkey
     )
     write_fmz(snaps2, native_gate(ts=clock[0] - 1000), now=clock[0])
     restarted.refresh(now_ms=clock[0], record_daily=False)
+    with serving(restarted) as base2:
+        tracking.sync_open(d, post(base2, restarted))
     link_rec = tracking.load(hand / "tracking" / "link.json")
     assert link_rec["lock_mode"] == "DELAYED_LOCK" and link_rec["delayed_lock"] is True
     assert len(restarted.locked_candidates.list()) == 1
@@ -1420,15 +1426,19 @@ def test_pending_lock_rotation_persistent_missing_timeout_and_declared_validity(
     clock[0] += 61 * M  # cross 60-minute validity deadline
     write_fmz(snaps, native_gate(ts=clock[0] - 1000), now=clock[0])
     wb.refresh(now_ms=clock[0], record_daily=False)
+    with serving(wb) as base:
+        tracking.sync_open(d, post(base, wb))
     assert not (hand / "tracking" / "link.json").exists()
     assert tracking.load(hand / "tracking" / "final_block.json")["reason"] == "shadow_handoff_expired"
     term_pending = tracking.load(hand / "tracking" / "pending_lock.json")
     assert term_pending["state"] == "TERMINATED" and term_pending["terminal_reason"] == "shadow_handoff_expired"
     attempts_at_term = len(term_pending["attempts"])
-    # Further refreshes after termination do not retry or append attempts
+    # Further refreshes / sync_open ticks after termination do not retry or append attempts
     clock[0] += 5 * M
     write_fmz(snaps, native_gate(ts=clock[0] - 1000), now=clock[0])
     wb.refresh(now_ms=clock[0], record_daily=False)
+    with serving(wb) as base:
+        tracking.sync_open(d, post(base, wb))
     assert len(tracking.load(hand / "tracking" / "pending_lock.json")["attempts"]) == attempts_at_term
     assert wb.locked_candidates.list() == []
 
@@ -1452,6 +1462,8 @@ def test_pending_lock_rotation_persistent_missing_timeout_and_declared_validity(
     mode_b["on"] = False
     write_fmz(snaps_b, native_gate(ts=clock_b[0] - 1000), now=clock_b[0])
     wb_b.refresh(now_ms=clock_b[0], record_daily=False)
+    with serving(wb_b) as base:
+        tracking.sync_open(d_b, post(base, wb_b))
     assert tracking.load(hand_b / "tracking" / "final_block.json")["reason"] == "shadow_handoff_expired"
     assert wb_b.locked_candidates.list() == []
 

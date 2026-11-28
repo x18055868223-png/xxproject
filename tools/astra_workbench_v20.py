@@ -27,6 +27,7 @@ import re
 import smtplib
 import socket
 import ssl
+import sys
 import tempfile
 import threading
 import time
@@ -1960,7 +1961,6 @@ class AstraWorkbench:
         self._discovery_round_seq = 0
         self._delta_mem_cache: dict[str, dict[str, Any]] = {}
         self._shadow_quote_slots: dict[str, dict[str, Any]] = {}
-        self._pending_lock_guard = threading.Lock()
         self._prepare_deal_lock = threading.Lock()
         self._gate_since: tuple[str, int | None] | None = None  # (effective state, since ms)
         self._last_compaction: dict[str, Any] | None = None
@@ -3401,103 +3401,7 @@ class AstraWorkbench:
             result["runtime"] = {"memory": dict(self._memory), "threads": threading.active_count()}
             if self.chain_audit is not None:
                 self.chain_audit.observe(result, finished_at_ms)
-        try:
-            self.retry_pending_shadow_locks(finished_at_ms)
-        except Exception:
-            pass
         return result
-
-    def retry_pending_shadow_locks(self, now_ms: int | None = None) -> list[dict[str, Any]]:
-        """Poll retryable ACCEPTED/PENDING_LOCK shadow hands inside their validity window."""
-        del now_ms
-        if player_tracking is None or not self.config.shadow_experiment or self.config.shadow_dossier_root is None:
-            return []
-        if not self._pending_lock_guard.acquire(blocking=False):
-            return []
-        try:
-            root = Path(self.config.shadow_dossier_root)
-            dossiers_root = root / "dossiers"
-            if not dossiers_root.is_dir():
-                return []
-            results: list[dict[str, Any]] = []
-
-            def direct_service(action: str, body: Mapping[str, Any]) -> dict[str, Any]:
-                try:
-                    return self.shadow_tracking(action, body)
-                except WorkbenchError as exc:
-                    raise player_tracking.Blocked(exc.code) from exc
-
-            d = player_tracking.dossier.Dossiers(root, clock=self.clock_ms)
-            for req_file in sorted(dossiers_root.glob("*/hands/hand_*/tracking/request.json")):
-                tr_dir = req_file.parent
-                hand = tr_dir.parent
-                if (tr_dir / "link.json").exists() or player_tracking._link_blocked(tr_dir):
-                    continue
-                try:
-                    req = player_tracking.load(req_file)
-                    exp = player_tracking.load(hand / "expected.json")
-                    proof = player_tracking.accepted(hand)
-                except (OSError, ValueError, KeyError, TypeError, player_tracking.Blocked):
-                    continue
-                now = d.clock()
-                target = player_tracking.contract_fields(proof["contract"])
-                failure_hint: str | None = None
-                use_fresh_quote = False
-                if now < int(req.get("deadline_ms") or 0):
-                    with self._view_lock:
-                        candidates = list((self._current_view or {}).get("candidates") or ())
-                        held = set(self._held_snapshot_ids)
-                        disc_status = dict((self._current_view or {}).get("discovery_status") or {})
-                    matching = next(
-                        (c for c in candidates if isinstance(c, Mapping) and isinstance(c.get("snapshot"), Mapping)
-                         and player_tracking.contract_fields(c["snapshot"]["contract"]) == target),
-                        None,
-                    )
-                    if matching is not None:
-                        snap = matching["snapshot"]
-                        if snap.get("snapshot_id") in held:
-                            failure_hint = "quote_held_not_current"
-                        else:
-                            try:
-                                player_tracking.confirm_quote(snap, now)
-                            except player_tracking.Blocked:
-                                use_fresh_quote = True
-                    else:
-                        same_side = next(
-                            (c for c in candidates if isinstance(c, Mapping) and c.get("side") == target["side"]),
-                            None,
-                        )
-                        side_snap = (same_side or {}).get("snapshot") if isinstance(same_side, Mapping) else None
-                        if isinstance(side_snap, Mapping):
-                            cur = player_tracking.contract_fields(side_snap["contract"])
-                            failure_hint = (
-                                f"current_contract_changed:{cur.get('short_instrument')}|{cur.get('long_instrument')}"
-                            )
-                        else:
-                            failure_hint = (
-                                str(disc_status.get("upstream_code") or "")
-                                or str((same_side or {}).get("error") or "")
-                                or "candidate_temporarily_unavailable"
-                            )
-                try:
-                    if use_fresh_quote:
-                        out = player_tracking._link_with_fresh_quote(d, hand, direct_service)
-                    else:
-                        out = player_tracking.link(d, hand, direct_service, _failure_hint=failure_hint)
-                    if out.get("state") in {"SHADOW_LOCK_CREATED", "ALREADY_LINKED", "LOCK_BLOCKED"}:
-                        with player_tracking._short_writer(d):
-                            d.summary(exp["expiry_ms"])
-                    results.append({"dossier_id": hand.parent.parent.name, "hand_id": hand.name, **out})
-                except (OSError, ValueError, KeyError, TypeError, player_tracking.Blocked) as exc:
-                    results.append({
-                        "dossier_id": hand.parent.parent.name,
-                        "hand_id": hand.name,
-                        "state": "LINK_UNVERIFIED",
-                        "reason": getattr(exc, "code", None) or type(exc).__name__,
-                    })
-            return results
-        finally:
-            self._pending_lock_guard.release()
 
     def _wpem_view_for_candidate(
         self,
@@ -8260,7 +8164,12 @@ def make_handler(workbench: AstraWorkbench):
                 self._json(404, {"code": "shadow_evidence_not_found"})
             except FileNotFoundError:
                 self._json(404, {"code": "shadow_evidence_not_found"})
-            except (OSError, ValueError, KeyError, TypeError, locked_store.LockedCandidateError):
+            except (OSError, ValueError, KeyError, TypeError, locked_store.LockedCandidateError) as exc:
+                print(
+                    f"[workbench] player_audit error path={path} err={type(exc).__name__}",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 self._json(409, {"code": "shadow_evidence_unavailable"})
 
         def _locked_public_proof(self, result: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -8342,7 +8251,12 @@ def make_handler(workbench: AstraWorkbench):
                 self._json(409, {"code": exc.code})
             except FileNotFoundError:
                 self._json(404, {"code": "shadow_evidence_not_found"})
-            except (OSError, ValueError, KeyError, TypeError, StopIteration):
+            except (OSError, ValueError, KeyError, TypeError, StopIteration) as exc:
+                print(
+                    f"[workbench] shadow_service error action={action} err={type(exc).__name__}",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 self._json(503, {"code": "shadow_service_unverified"})
 
         def do_POST(self) -> None:

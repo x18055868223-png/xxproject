@@ -5324,6 +5324,13 @@ def _attempt_projection(attempt_rec):
     return proj
 
 
+def _optional_tolerant(path):
+    try:
+        return optional(path), None
+    except (OSError, ValueError, KeyError, TypeError, Blocked) as exc:
+        return None, exc
+
+
 def audit_record(hand, now, tracker_status, *, detail=False):
     exp = load(hand / 'expected.json')
     if exp['hand_id'] != hand.name or exp['dossier_id'] != hand.parent.parent.name:
@@ -5333,11 +5340,27 @@ def audit_record(hand, now, tracker_status, *, detail=False):
     if not detail and decision and decision.get('attempt_id'):
         attempt = optional(hand / 'responses' / dossier.key(decision['attempt_id']) / 'attempt.json')
     frozen = optional(hand / 'evidence' / 'identity.json')
-    req = optional(root / 'request.json')
-    receipt = optional(root / 'link.json')
-    pending_lock = optional(root / 'pending_lock.json')
-    blocked = _link_blocked(root)
-    notes = sorted((load(p) for p in (hand / 'issuance').glob('*.json')), key=lambda p: p['recorded_at_ms'])
+    req, req_err = _optional_tolerant(root / 'request.json')
+    receipt, rec_err = _optional_tolerant(root / 'link.json')
+    pending_lock, pend_err = _optional_tolerant(root / 'pending_lock.json')
+    try:
+        blocked = _link_blocked(root)
+        blk_err = None
+    except (OSError, ValueError, KeyError, TypeError, Blocked) as exc:
+        blocked = None
+        blk_err = exc
+    notes = []
+    note_err = None
+    for p in (hand / 'issuance').glob('*.json'):
+        try:
+            row = load(p)
+            if isinstance(row, dict) and isinstance(row.get('recorded_at_ms'), int):
+                notes.append(row)
+        except (OSError, ValueError, KeyError, TypeError, Blocked) as exc:
+            if note_err is None:
+                note_err = exc
+    notes.sort(key=lambda p: p['recorded_at_ms'])
+    tracking_read_error = rec_err or pend_err or req_err or blk_err or note_err
     deadline = dossier.Dossiers.reply_deadline(exp, frozen) if frozen else None
     attempts = sorted((load(p) for p in (hand / 'responses').glob('*/attempt.json') if not p.parent.name.startswith('.')),
                       key=lambda p: p['ordinal'])
@@ -5359,13 +5382,15 @@ def audit_record(hand, now, tracker_status, *, detail=False):
         if last_note_state
         else 'EXPECTED'
     )
-    tracker = receipt['t0']['tracker_episode_id'] if receipt else None
-    terminal = optional(root / 'terminal.json') if receipt else None
-    terminal_meta = optional(root / 'exports' / dossier.key(terminal['export_id']) / 'manifest.json') if terminal else None
+    tracker = receipt['t0']['tracker_episode_id'] if isinstance(receipt, dict) and isinstance(receipt.get('t0'), dict) else None
+    terminal, _ = _optional_tolerant(root / 'terminal.json') if receipt else (None, None)
+    terminal_meta = None
+    if isinstance(terminal, dict) and terminal.get('export_id'):
+        terminal_meta, _ = _optional_tolerant(root / 'exports' / dossier.key(terminal['export_id']) / 'manifest.json')
     if terminal_meta and detail:
         try:
             terminal_meta, _ = terminal_trajectory(hand)
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, ValueError, KeyError, TypeError, Blocked):
             terminal_meta = None
     lock_deadline_ms = (
         (pending_lock or {}).get('deadline_ms')
@@ -5381,7 +5406,9 @@ def audit_record(hand, now, tracker_status, *, detail=False):
                   if tracker else 'LOCK_BLOCKED' if blocked or any(n['state'] == 'LOCK_BLOCKED' for n in notes)
                   else 'PENDING_LOCK' if is_pending_active
                   else 'LINK_UNVERIFIED' if any(n['state'] == 'LINK_UNVERIFIED' for n in notes)
-                  else req['state'] if req else None)
+                  else req['state'] if isinstance(req, dict) and req.get('state')
+                  else 'LINK_UNVERIFIED' if tracking_read_error is not None
+                  else None)
     initial_usage = _normalize_usage(((attempt or {}).get('configuration') or {}).get('usage'))
     result = dict(dossier_id=exp['dossier_id'], hand_id=hand.name, sample=exp['sample'], state=state,
                   expiry_ms=exp['expiry_ms'], frozen_at_ms=(frozen or {}).get('hand_frozen_at_ms'),
@@ -5425,12 +5452,23 @@ def audit_record(hand, now, tracker_status, *, detail=False):
     updated = max((t for t in (exp.get('recorded_at_ms'), result['frozen_at_ms'],
                     (sent or {}).get('requested_at_ms'), (reply or {}).get('decided_at_ms'),
                     last.get('recorded_at_ms'), (decision or {}).get('recorded_at_ms'),
-                    (req or {}).get('requested_at_ms'), (receipt or {}).get('recorded_at_ms'),
-                    note.get('recorded_at_ms')) if isinstance(t, int)), default=None)
+                    (req or {}).get('requested_at_ms'), (pending_lock or {}).get('updated_at_ms'),
+                    (receipt or {}).get('recorded_at_ms'), note.get('recorded_at_ms'))
+                   if isinstance(t, int)), default=None)
     stage = lock_state or state
     if receipt and tracker_status is None:
         stage = 'ARCHIVED' if terminal_meta else 'LINK_CONFIRMED'
-    reason = (blocked or {}).get('reason') or last.get('error') or note.get('reason')
+    tracking_err_reason = (
+        (getattr(tracking_read_error, 'code', None) or type(tracking_read_error).__name__)
+        if tracking_read_error is not None else None
+    )
+    reason = (
+        (blocked or {}).get('reason')
+        or last.get('error')
+        or note.get('reason')
+        or (pending_lock or {}).get('last_failure_reason')
+        or tracking_err_reason
+    )
     if not receipt and note.get('state') == 'DEAL_BLOCKED' and note.get('recorded_at_ms') == updated:
         stage = 'DEAL_BLOCKED'
     elif not decision and frozen and not attempts and (
@@ -5547,14 +5585,16 @@ def audit_record(hand, now, tracker_status, *, detail=False):
          if n.get('state') in {'LOCK_BLOCKED', 'LINK_UNVERIFIED'} and n.get('reason')),
         None,
     )
-    result.update(decision=decision, requested_at_ms=(attempt or {}).get('requested_at_ms'),
+    result.update(decision=decision,
+                  requested_at_ms=(attempt or {}).get('requested_at_ms') or (sent or {}).get('requested_at_ms'),
                   reasoning_effort=top_cfg.get('reasoning_effort'),
                   usage=initial_usage or _normalize_usage(top_cfg.get('usage')),
                   lock_requested_at_ms=(req or {}).get('requested_at_ms'), receipt=receipt and receipt['t0'],
                   condition=frozen_cond, entry_basis=entry_basis,
                   events=[_event_projection(e) for e in recent], archive=terminal_meta,
                   attempts=[_attempt_projection(a) for a in attempts[-8:]],
-                  notes=notes[-8:], lock_reason=(blocked or {}).get('reason') or note_lock_reason,
+                  notes=notes[-8:],
+                  lock_reason=(blocked or {}).get('reason') or note_lock_reason or (pending_lock or {}).get('last_failure_reason') or tracking_err_reason,
                   grid_check_history=grid_check_history,
                   post_revoke_grid_check_count=post_revoke_grid_check_count)
     if mgmt is not None:
@@ -5564,7 +5604,11 @@ def audit_record(hand, now, tracker_status, *, detail=False):
         result['grid_check_summary'] = mgmt.get('grid_check_summary')
         result['hold_skip_summary'] = mgmt.get('hold_skip_summary')
         result['management_telemetry'] = mgmt.get('management_telemetry')
-    outcomes = [(path, load(path)) for path in (hand.parent.parent / 'outcomes').glob('outcome_*/outcome.json')]
+    outcomes = []
+    for path in (hand.parent.parent / 'outcomes').glob('outcome_*/outcome.json'):
+        doc, _ = _optional_tolerant(path)
+        if isinstance(doc, dict) and isinstance(doc.get('recorded_at_ms'), int):
+            outcomes.append((path, doc))
     if outcomes:
         out = max(outcomes, key=lambda pair: pair[1]['recorded_at_ms'])[1]
         result['outcome'] = {k: out.get(k) for k in ('classification', 'delivery', 'verification_gap', 'recorded_at_ms')}
@@ -5578,25 +5622,84 @@ def audit_record(hand, now, tracker_status, *, detail=False):
     return result
 
 
+def _dossier_expiry_ms(dossier_id):
+    match = re.fullmatch(r'Deribit_BTC_(\d{8})T(\d{6})Z', str(dossier_id or ''))
+    if not match:
+        return None
+    dt = dossier.datetime.strptime(match.group(1) + match.group(2), '%Y%m%d%H%M%S').replace(
+        tzinfo=dossier.timezone.utc
+    )
+    return int(dt.timestamp() * 1000)
+
+
+def _unreadable_audit_card(folder, hand, exc):
+    reason = getattr(exc, 'code', None) or type(exc).__name__
+    exp = None
+    try:
+        cand_exp = load(hand / 'expected.json')
+        if (isinstance(cand_exp, dict) and cand_exp.get('hand_id') == hand.name
+                and cand_exp.get('dossier_id') == folder.name):
+            exp = cand_exp
+    except (OSError, ValueError, KeyError, TypeError, Blocked):
+        exp = None
+    expiry_ms = exp.get('expiry_ms') if isinstance(exp, dict) else _dossier_expiry_ms(folder.name)
+    sched_ms = exp.get('scheduled_at_ms') if isinstance(exp, dict) else None
+    if type(sched_ms) is not int and type(expiry_ms) is int:
+        sched_ms = expiry_ms - 18 * 60 * dossier.MINUTE
+    return dict(
+        dossier_id=folder.name,
+        hand_id=hand.name,
+        sample=(exp.get('sample') if isinstance(exp, dict) and exp.get('sample') else 'SCHEDULED'),
+        state='EVIDENCE_UNAVAILABLE',
+        stage='EVIDENCE_UNAVAILABLE',
+        stage_reason=reason,
+        expiry_ms=expiry_ms,
+        scheduled_at_ms=sched_ms,
+        frozen_at_ms=None,
+        last_update_ms=sched_ms,
+    )
+
+
+def _pick_current_scheduled(cards, now):
+    due = [
+        c for c in (cards or ())
+        if isinstance(c, dict)
+        and c.get('sample') == 'SCHEDULED'
+        and type(c.get('scheduled_at_ms')) is int
+        and c['scheduled_at_ms'] <= now
+    ]
+    return max(due, key=lambda c: (c['scheduled_at_ms'], str(c.get('hand_id') or '')), default=None)
+
+
 def current_scheduled(root, now):
-    """Read the latest due formal hand without building the history or native tracker index."""
+    """Read the latest due formal hand using the exact same round selection as audit_index."""
     folders = sorted((Path(root) / 'dossiers').glob('Deribit_BTC_*'), reverse=True)
     for folder in folders:
         candidates = []
+        exp_ms = _dossier_expiry_ms(folder.name)
+        nominal_slot = (exp_ms - 18 * 60 * dossier.MINUTE) if type(exp_ms) is int else None
         for path in (folder / 'hands').glob('hand_*/expected.json'):
+            hand = path.parent
             try:
                 exp = load(path)
                 if (isinstance(exp, dict) and exp.get('sample') == 'SCHEDULED'
+                        and exp.get('hand_id') == hand.name and exp.get('dossier_id') == folder.name
                         and type(exp.get('scheduled_at_ms')) is int and exp['scheduled_at_ms'] <= now):
-                    candidates.append((exp['scheduled_at_ms'], path.parent.name, path.parent))
-            except (OSError, ValueError, KeyError, TypeError):
+                    candidates.append((exp['scheduled_at_ms'], hand.name, hand, None))
+            except PermissionError as exc:
+                if type(nominal_slot) is int and nominal_slot <= now:
+                    candidates.append((nominal_slot, hand.name, hand, exc))
+            except (OSError, ValueError, KeyError, TypeError, Blocked):
                 continue
         candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
-        for _, _, hand in candidates:
+        if candidates:
+            _, _, hand, read_exc = candidates[0]
+            if read_exc is not None:
+                return _unreadable_audit_card(folder, hand, read_exc)
             try:
                 return audit_record(hand, now, None)
-            except (OSError, ValueError, KeyError, TypeError):
-                continue
+            except (OSError, ValueError, KeyError, TypeError, Blocked) as exc:
+                return _unreadable_audit_card(folder, hand, exc)
     return None
 
 
@@ -5611,12 +5714,24 @@ def audit_index(root, now, active_ids, *, limit=200):
         for hand in hands[:cap - len(cards)]:
             try:
                 cards.append(audit_record(hand, now, active_ids))
-            except (ValueError, OSError, KeyError, TypeError):
-                cards.append(dict(dossier_id=folder.name, hand_id=hand.name, state='EVIDENCE_UNAVAILABLE'))
+            except (ValueError, OSError, KeyError, TypeError, Blocked) as exc:
+                cards.append(_unreadable_audit_card(folder, hand, exc))
         if len(cards) >= cap:
             break
-    cards.sort(key=lambda c: (c.get('frozen_at_ms') or c.get('scheduled_at_ms') or 0, c['hand_id']), reverse=True)
-    return {'hands': cards[:cap]}
+    cards.sort(
+        key=lambda c: (
+            c.get('scheduled_at_ms') if type(c.get('scheduled_at_ms')) is int else (c.get('frozen_at_ms') or c.get('expiry_ms') or 0),
+            c.get('frozen_at_ms') or 0,
+            c['hand_id'],
+        ),
+        reverse=True,
+    )
+    trimmed = cards[:cap]
+    cur = _pick_current_scheduled(trimmed, now)
+    return {
+        'hands': trimmed,
+        'current_ref': f"{cur['dossier_id']}/{cur['hand_id']}" if cur else None,
+    }
 
 
 def _sanitize_partial_response(partial):

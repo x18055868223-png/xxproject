@@ -601,16 +601,54 @@ def _walk_tree_no_symlinks(root: Path, *, on_dir: Any, on_file: Any) -> None:
         on_file(root)
 
 
-def _migrate_exec_shared_permissions(prefix: Path) -> None:
-    """Migrate existing /var/lib/xxproject/{workbench,llm} ownership/permissions for astra-workbench."""
-    research_grp = "bitnami"
+def _resolve_research_group() -> str:
     try:
         import grp
 
         grp.getgrnam("research")
-        research_grp = "research"
+        return "research"
     except Exception:
-        pass
+        return "bitnami"
+
+
+def repair_shadow_dossier_permissions(
+    dossier_root: Path,
+    *,
+    group: str | None = None,
+) -> dict[str, Any]:
+    """Idempotently ensure dossier directories (2750) and files (g+r, o-rwx) are shared-group readable."""
+    if not dossier_root.exists():
+        return {"ok": True, "exists": False, "dossier_root": str(dossier_root), "dirs": 0, "files": 0}
+    eff_group = group or _resolve_research_group()
+    counts = {"dirs": 0, "files": 0}
+
+    def on_dir(d: Path) -> None:
+        _chown_safe(d, group=eff_group)
+        _chmod_posix(d, 0o2750)
+        counts["dirs"] += 1
+
+    def on_file(f: Path) -> None:
+        _chown_safe(f, group=eff_group)
+        try:
+            cur = f.stat().st_mode & 0o7777
+            _chmod_posix(f, (cur & 0o700) | 0o040)
+        except OSError:
+            pass
+        counts["files"] += 1
+
+    _walk_tree_no_symlinks(dossier_root, on_dir=on_dir, on_file=on_file)
+    return {
+        "ok": True,
+        "exists": True,
+        "dossier_root": str(dossier_root),
+        "group": eff_group,
+        **counts,
+    }
+
+
+def _migrate_exec_shared_permissions(prefix: Path) -> None:
+    """Migrate existing /var/lib/xxproject/{workbench,llm} ownership/permissions for astra-workbench."""
+    research_grp = _resolve_research_group()
 
     llm_dir = prefix / "var" / "lib" / "xxproject" / "llm"
     if llm_dir.is_dir():
@@ -635,7 +673,9 @@ def _migrate_exec_shared_permissions(prefix: Path) -> None:
             elif name == "deribit_cooldown.json":
                 _chown_safe(child, group=research_grp)
                 _chmod_posix(child, 0o664)
-            elif name == "shadow_dossiers" or name.startswith(("snapshots.jsonl", "decisions.jsonl", "signal_review.jsonl")):
+            elif name == "shadow_dossiers":
+                repair_shadow_dossier_permissions(child, group=research_grp)
+            elif name.startswith(("snapshots.jsonl", "decisions.jsonl", "signal_review.jsonl")):
                 _walk_tree_no_symlinks(
                     child,
                     on_dir=lambda d: (_chown_safe(d, group=research_grp), _add_mode_bits(d, 0o050)),
@@ -1361,6 +1401,11 @@ def main(argv: list[str] | None = None) -> int:
     p_st = sub.add_parser("status")
     add_common(p_st)
 
+    p_rep = sub.add_parser("repair-dossier-perms")
+    add_common(p_rep)
+    p_rep.add_argument("--dossier-root", type=Path, default=None)
+    p_rep.add_argument("--group", default=None)
+
     args = parser.parse_args(argv)
     prefix = args.root_prefix.resolve()
     if args.command == "preflight":
@@ -1396,6 +1441,13 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif args.command == "status":
         out = cmd_status(prefix)
+    elif args.command == "repair-dossier-perms":
+        dossier_root = (
+            args.dossier_root.resolve()
+            if args.dossier_root is not None
+            else (prefix / "var" / "lib" / "xxproject" / "workbench" / "shadow_dossiers")
+        )
+        out = repair_shadow_dossier_permissions(dossier_root, group=args.group)
     else:
         raise SystemExit(2)
 

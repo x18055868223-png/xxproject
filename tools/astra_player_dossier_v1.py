@@ -86,10 +86,15 @@ def publish(folder, files):
     stage = Path(tempfile.mkdtemp(prefix='.stage-', dir=folder.parent))
     try:
         for name, data in files.items():
-            with (stage / name).open('xb') as stream:
+            target = stage / name
+            with target.open('xb') as stream:
                 stream.write(data)
                 stream.flush()
                 os.fsync(stream.fileno())
+            if os.name != 'nt':
+                os.chmod(target, 0o640)
+        if os.name != 'nt':
+            os.chmod(stage, (os.stat(stage).st_mode & 0o2000) | 0o750)
         stage.rename(folder)
     finally:
         if stage.exists():
@@ -108,6 +113,8 @@ def write(path, data, *, replace=False):
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
+        if os.name != 'nt':
+            os.chmod(temp, 0o640)
         os.replace(temp, path)
     finally:
         Path(temp).unlink(missing_ok=True)

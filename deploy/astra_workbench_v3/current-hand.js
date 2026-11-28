@@ -16,7 +16,7 @@ export const LABELS = {
   VALID: "解析有效", DUPLICATE: "重复回复",
   EVIDENCE_UNAVAILABLE: "证据暂不可读", TRACKING: "已关联锁定追踪",
   ARCHIVED: "归档证据可读（实时追踪已过保留期）", TRACKER_UNAVAILABLE: "追踪暂不可读",
-  LOCK_BLOCKED: "锁定受阻", LINK_UNVERIFIED: "锁定回执待核对", SHADOW_LOCK_REQUESTED: "已提交锁定申请",
+  PENDING_LOCK: "影子锁待核实", LOCK_BLOCKED: "锁定受阻", LINK_UNVERIFIED: "锁定回执待核对", SHADOW_LOCK_REQUESTED: "已提交锁定申请",
   OBSERVATION: "锁定追踪采样同步", CONDITION_UNKNOWN: "网格检查：资料待补齐",
   CONDITION_TRIGGERED: "网格检查：已触发破坏条件", CONDITION_NOT_TRIGGERED: "网格检查：未触发破坏条件",
   REVIEW_REQUIRED: "ARD 变化需复核",
@@ -35,12 +35,30 @@ export const LABELS = {
   SHADOW_EXITED: "影子已退出（终态 · 已停止主动追踪）",
   active: "观察中", stopped: "已停止观察", expired: "已到期", error: "追踪异常", paused: "追踪暂停",
 };
+const REASON_STAGES = new Set([
+  "DEAL_BLOCKED", "LOCK_BLOCKED", "LINK_UNVERIFIED", "PENDING_LOCK",
+  "DATA_BLOCKED", "DELIVERY_UNKNOWN", "PROVIDER_REJECTED", "REQUEST_FAILED",
+  "TIMEOUT", "PARSE_FAILED", "EVIDENCE_UNAVAILABLE",
+]);
 export function stageText(hand) {
   const state = hand?.stage || hand?.state;
   if (!state) return "状态未知";
   const label = LABELS[state] || state;
-  return hand.stage_reason && ["DEAL_BLOCKED", "LOCK_BLOCKED", "LINK_UNVERIFIED", "DATA_BLOCKED", "DELIVERY_UNKNOWN", "PROVIDER_REJECTED", "REQUEST_FAILED", "TIMEOUT", "PARSE_FAILED"].includes(state)
+  return hand.stage_reason && REASON_STAGES.has(state)
     ? `${label} · ${hand.stage_reason}` : label;
+}
+export function lockProgressText(hand) {
+  if (!hand || !hand.tracking_state) return null;
+  const ts = hand.tracking_state;
+  const base = LABELS[ts] || ts;
+  if (ts === "TRACKING") {
+    return hand.tracker_status ? `${base}（${LABELS[hand.tracker_status] || hand.tracker_status}）` : base;
+  }
+  if (ts === "ARCHIVED" || ts === "LINK_CONFIRMED") return base;
+  const attempts = isNum(hand.pending_lock?.attempts_count) ? `${hand.pending_lock.attempts_count} 次` : null;
+  const reason = hand.pending_lock?.last_failure_reason || hand.lock_reason || hand.stage_reason;
+  const extra = [attempts ? `已尝试 ${attempts}` : null, reason].filter(Boolean).join(" · ");
+  return extra ? `${base}（${extra}）` : base;
 }
 let epoch = 0, authorized = false, firstView = null, onUnauthorized = null;
 export function setUnauthorizedHandler(fn) {
@@ -91,9 +109,15 @@ export async function loadCurrent() {
     }
     const expiry = isNum(hand.expiry_ms) ? ` · ${new Date(hand.expiry_ms).toISOString().slice(0, 10)} 到期` : "";
     const updated = hand.last_update_ms;
+    const isDecision = ["Accept", "Reject", "Unknown"].includes(hand.state);
+    const sideText = hand.side ? ` / ${hand.side === "put" ? "Put" : hand.side === "call" ? "Call" : hand.side}` : "";
+    const verdictPart = isDecision
+      ? `${LABELS[hand.state]}${sideText}`
+      : stageText(hand);
+    const lockPart = isDecision && hand.tracking_state ? ` · 影子锁：${lockProgressText(hand)}` : "";
     delete box.dataset.state;
     box.hidden = false;
-    box.textContent = `正式牌${expiry} · ${stageText(hand)}`
+    box.textContent = `正式牌${expiry} · ${verdictPart}${lockPart}`
       + (isNum(updated) ? ` · 更新 ${new Date(updated).toISOString().slice(11, 19)} UTC（${ago(updated)}）` : "");
     box.dataset.ready = "true";
   } catch (err) {

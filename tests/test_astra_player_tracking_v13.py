@@ -1659,3 +1659,90 @@ def test_hold_orphan_ignores_superseded_dispatch_and_recovers_non_auto_revoke(tm
         sx_lv = dossier.read(hand3 / 'tracking' / 'shadow_exit.json')
         assert sx_lv['tracker_stopped'] is False
 
+
+def test_audit_decouples_tracking_failure_and_unifies_due_current_selection(tmp_path, monkeypatch):
+    now_clk = Clock(SLOT + 2 * dossier.DAY + 5 * M)
+    d = dossier.Dossiers(tmp_path, clock=now_clk)
+    p = plan()
+    # D26 old TIMEOUT hand
+    slot26 = SLOT
+    h26 = d.expect(slot26 + p['expiry_offset_ms'], 'SCHEDULED', plan=p, slot=slot26)
+    h26_clock = Clock(slot26 + M)
+    d26 = dossier.Dossiers(tmp_path, clock=h26_clock)
+    d26.deal(h26, fixture_source(h26_clock))
+    dossier.publish(h26 / 'responses' / 'auto_t26', {
+        'attempt.json': dossier.encode({
+            'attempt_id': 'auto_t26', 'ordinal': 1, 'status': 'TIMEOUT', 'channel': 'API_AUTO',
+            'model': 'deepseek-v4-pro', 'requested_at_ms': slot26 + M, 'recorded_at_ms': slot26 + 6 * M,
+            'error': 'TimeoutError: LLM request wall-clock deadline exceeded',
+        })
+    })
+    # D27 DATA_BLOCKED (no frozen_at_ms)
+    slot27 = SLOT + dossier.DAY
+    h27 = d.expect(slot27 + p['expiry_offset_ms'], 'SCHEDULED', plan=p, slot=slot27)
+    dossier.write(h27 / 'issuance' / 'note_blocked.json', dossier.encode({
+        'state': 'DATA_BLOCKED', 'reason': 'missing_put', 'recorded_at_ms': slot27 + 2 * M,
+    }))
+    # D28 Accept Call with corrupt/failed tracking file (must NOT hide request or Accept verdict)
+    slot28 = SLOT + 2 * dossier.DAY
+    h28 = d.expect(slot28 + p['expiry_offset_ms'], 'SCHEDULED', plan=p, slot=slot28)
+    board_bytes = b'## \xe6\x9c\xac\xe5\xb1\x80\xe7\x89\x8c\xe9\x9d\xa2\nD28\n## \xe8\xaf\xbb\xe5\xae\x8c\xe5\x90\x8e\xe5\x8f\xa6\xe5\x86\x99\n'
+    src_bytes = dossier.encode({'cases': [], 'cards': [], 'history': [], 'index_path': {'index_name': 'btc_usd', 'points': []}})
+    dossier.publish(h28 / 'evidence', {
+        'input.md': board_bytes,
+        'source.json': src_bytes,
+        'identity.json': dossier.encode({
+            'research': dossier.RESEARCH, 'input_sha256': dossier.sha(board_bytes),
+            'source_sha256': dossier.sha(src_bytes), 'hand_frozen_at_ms': slot28 + 2 * M,
+        }),
+    })
+    raw_ok = ('**Accept / Call**\n' + '\n'.join(EXCERPTS.values()) + '\n' +
+              '\n'.join(RULE[k] for k in ('historical_facts', 'accepted_conditions', 'confirmation_excerpt'))).encode()
+    att28 = {
+        'attempt_id': 'auto_a28', 'hand_id': h28.name, 'ordinal': 1, 'status': 'VALID', 'channel': 'API_AUTO',
+        'model': 'deepseek-v4-pro', 'parser': dossier.PARSER, 'configuration_id': 'cfg_test',
+        'input_sha256': dossier.sha(board_bytes), 'raw_sha256': dossier.sha(raw_ok),
+        'requested_at_ms': slot28 + 2 * M, 'decided_at_ms': slot28 + 4 * M, 'recorded_at_ms': slot28 + 4 * M + 100,
+        'annotation': EXCERPTS, 'judgment': dossier.parse(raw_ok, EXCERPTS),
+        'configuration': {'reasoning_effort': 'high', 'usage': {'total_tokens': 100}},
+    }
+    dossier.publish(h28 / 'responses' / 'auto_a28', {
+        'attempt.json': dossier.encode(att28),
+        'response.raw': raw_ok,
+    })
+    dossier.write(h28 / 'decision.json', dossier.encode({
+        **{k: att28[k] for k in tracking.DECISION_FIELDS},
+        'response': 'responses/auto_a28/response.raw',
+    }))
+    dossier.write(h28 / 'tracking' / 'pending_lock.json', b'{corrupt-lock-json')
+
+    rec28 = tracking.audit_record(h28, now_clk(), {}, detail=True)
+    assert rec28['state'] == 'Accept' and rec28['side'] == 'call'
+    assert rec28['requested_at_ms'] == slot28 + 2 * M
+    assert rec28['tracking_state'] == 'LINK_UNVERIFIED'
+    assert rec28['lock_reason'] == 'JSONDecodeError'
+
+    cur = tracking.current_scheduled(tmp_path, now_clk())
+    idx = tracking.audit_index(tmp_path, now_clk(), {})
+    assert cur is not None and f"{cur['dossier_id']}/{cur['hand_id']}" == idx['current_ref']
+    assert idx['current_ref'] == f"{h28.parent.parent.name}/{h28.name}"
+    assert [c['hand_id'] for c in idx['hands'][:3]] == [h28.name, h27.name, h26.name]
+
+    # When D28 raises PermissionError, index + current_scheduled agree & retain due D28 slot
+    orig_load = tracking.load
+
+    def _deny_h28(path):
+        if Path(path) == (h28 / 'expected.json'):
+            raise PermissionError(13, 'denied', str(path))
+        return orig_load(path)
+
+    monkeypatch.setattr(tracking, 'load', _deny_h28)
+    cur_bad = tracking.current_scheduled(tmp_path, now_clk())
+    idx_bad = tracking.audit_index(tmp_path, now_clk(), {})
+    assert cur_bad['dossier_id'] == h28.parent.parent.name
+    assert cur_bad['state'] == 'EVIDENCE_UNAVAILABLE'
+    assert cur_bad['stage_reason'] == 'PermissionError'
+    assert idx_bad['current_ref'] == f"{h28.parent.parent.name}/{h28.name}"
+    assert idx_bad['hands'][0]['hand_id'] == h28.name
+
+

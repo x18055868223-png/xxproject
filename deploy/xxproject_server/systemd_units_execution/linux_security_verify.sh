@@ -126,4 +126,30 @@ if [[ -d "${WB_STATE_DIR}" ]]; then
   su -s /bin/bash astra-workbench -c "test -r '${WB_STATE_DIR}' -a -w '${WB_STATE_DIR}' -a -x '${WB_STATE_DIR}'" || fail "astra-workbench lacks rwx on ${WB_STATE_DIR}"
 fi
 pass "8. Shared llm/workbench cross-UID permissions verified"
+
+# 9. Newly written dossier files/dirs by bitnami remain readable by astra-workbench and astra-exec (with research group)
+CUR_DIR="/opt/xxproject/current"
+if [[ -f "${CUR_DIR}/tools/astra_player_dossier_v1.py" ]]; then
+  probe_dir="$(mktemp -d /tmp/xxp_dossier_probe.XXXXXX)"
+  trap 'rm -rf "${probe_dir}"' EXIT
+  chown bitnami:research "${probe_dir}"
+  chmod 2750 "${probe_dir}"
+  su -s /bin/bash bitnami -c "umask 0027 && PYTHONPATH='${CUR_DIR}' python3 -c \"from pathlib import Path; from tools import astra_player_dossier_v1 as d; p = Path('${probe_dir}/dossiers/Deribit_BTC_20261128T080000Z/hands/hand_000000000000000000000001'); d.write(p / 'expected.json', b'{\\\"ok\\\":1}\\n'); d.write(p / 'expected.json', b'{\\\"ok\\\":2}\\n', replace=True); d.publish(p / 'evidence', {'identity.json': b'{}', 'input.md': b'hi'})\"" \
+    || fail "bitnami failed to write isolated dossier probe"
+  for check_u in astra-workbench astra-exec; do
+    if [[ "${check_u}" == "astra-exec" ]]; then
+      exec_gid="$(id -g astra-exec)"
+      exec_uid="$(id -u astra-exec)"
+      res_gid="$(getent group research | cut -d: -f3)"
+      setpriv --reuid="${exec_uid}" --regid="${exec_gid}" --groups="${res_gid}" test -r "${probe_dir}/dossiers/Deribit_BTC_20261128T080000Z/hands/hand_000000000000000000000001/expected.json" \
+        || fail "${check_u} cannot read newly written dossier expected.json"
+      setpriv --reuid="${exec_uid}" --regid="${exec_gid}" --groups="${res_gid}" test -r "${probe_dir}/dossiers/Deribit_BTC_20261128T080000Z/hands/hand_000000000000000000000001/evidence/identity.json" \
+        || fail "${check_u} cannot read newly published dossier evidence"
+    else
+      su -s /bin/bash "${check_u}" -c "test -r '${probe_dir}/dossiers/Deribit_BTC_20261128T080000Z/hands/hand_000000000000000000000001/expected.json' -a -r '${probe_dir}/dossiers/Deribit_BTC_20261128T080000Z/hands/hand_000000000000000000000001/evidence/identity.json'" \
+        || fail "${check_u} cannot read newly written/published dossier probe"
+    fi
+  done
+  pass "9. Newly created dossier artifacts readable by both astra-workbench and astra-exec"
+fi
 echo "ALL_LINUX_SECURITY_CHECKS_PASSED"

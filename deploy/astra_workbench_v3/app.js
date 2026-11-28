@@ -12,7 +12,7 @@ import { sessionStrip, warningBlock, timeLamp } from "./session.js";
 import { renderDecision as renderDecisionView, gateStepId } from "./decision.js";
 import { auSummary, inquiryAudit, contractKey, toSummary } from "./inquiry.js";
 import { startupSession, initialView, loadCurrent, setSession, setUnauthorizedHandler } from "./current-hand.js";
-import { playerRef, renderPlayerAudit } from "./player-audit.js";
+import { playerRef, renderPlayerAudit, selectDefaultPlayerRef } from "./player-audit.js";
 import { humanize, evidenceName, fieldName, termName, SOURCE_CN, COMPONENT_CN } from "./glossary.js";
 import { renderExecution, execStripModel, execNeedsFastPoll, pickExecFixture } from "./execution.js";
 
@@ -48,7 +48,7 @@ const state = {
   dp: { session: null, busy: null, error: null, confirm: null },
   // question sheets (docs/opus/14): responses by contract, the audit tab, a contract pinned from the audit step
   iq: { cache: {}, last: {}, mode: "player", pin: null, file: {}, q: null, ref: null, reveal: new Set() },
-  player: { cards: [], ref: null, detail: null, originals: null, modelInputs: new Map(), modelInputsPending: new Map(), expanded: new Set(), seq: 0, indexSeq: 0, indexInFlight: 0, version: 0 },
+  player: { cards: [], ref: null, currentRef: null, manualRef: null, detail: null, originals: null, modelInputs: new Map(), modelInputsPending: new Map(), expanded: new Set(), seq: 0, indexSeq: 0, indexInFlight: 0, version: 0 },
   exec: { status: null, error: null, loading: false, timer: null, seq: 0, fetchedAt: null,
     fixtureKey: EXEC_FIXTURE_KEY, fixtureKeys: [], fixtureLabels: {}, fixtureAll: null },
   pending: null, error: null, loadedAt: null, busy: false,
@@ -211,7 +211,7 @@ async function loadSession(initial = false) {
     else {
       const P = state.player;
       P.modelInputs?.clear(); P.modelInputsPending?.clear();
-      Object.assign(P, { cards: [], detail: null, originals: null, originalsPending: null,
+      Object.assign(P, { cards: [], ref: null, currentRef: null, manualRef: null, detail: null, originals: null, originalsPending: null,
         error: null, indexError: null, indexAt: 0, indexInFlight: 0, loading: false,
         version: P.version + 1, seq: P.seq + 1, indexSeq: P.indexSeq + 1 });
       renderAudit();
@@ -1016,10 +1016,15 @@ function renderAuditMain() {
   if (audit.dataset.playerVersion !== tag) {
     audit.dataset.playerVersion = tag;
     renderPlayerAudit(clear(audit), P, { available: state.view ? available : true,
-      authenticated: state.session.authenticated, onSelect: (ref) => showPlayerHand(ref),
+      authenticated: state.session.authenticated,
+      onSelect: (ref) => showPlayerHand(ref, false, true),
+      onBackToCurrent: () => {
+        P.manualRef = null;
+        if (P.currentRef) showPlayerHand(P.currentRef, false, false);
+      },
       onLogin: () => openLogin(""), onTracker: openTracker, onOriginals: showPlayerOriginals,
       onModelInput: fetchPlayerModelInput, modelInputUrl: api.playerModelInputUrl,
-      onRefresh: () => loadPlayerIndex(true) });
+      onRefresh: () => { loadCurrent(); loadPlayerIndex(true); } });
   }
   return;
 }
@@ -1032,17 +1037,22 @@ async function loadPlayerIndex(force = false) {
   const seq = ++P.indexSeq;
   P.indexInFlight = seq;
   try {
-    const { hands } = await api.playerHands();
+    const { hands = [], current_ref: apiCurrentRef = null } = await api.playerHands();
     if (!state.session.authenticated || seq !== P.indexSeq) return;
     const old = P.cards.find((c) => playerRef(c) === P.ref);
     const changed = JSON.stringify(hands) !== JSON.stringify(P.cards) || P.indexError;
     P.cards = hands; P.indexError = null; P.indexAt = Date.now();
-    const first = hands.find((c) => c.frozen_at_ms);
-    if (first && !P.explicitMode) state.iq.mode = "player";
-    const ref = P.ref || ((first || hands[0]) ? playerRef(first || hands[0]) : null);
+    const currentRef = selectDefaultPlayerRef(hands, apiCurrentRef);
+    const prevCurrent = P.currentRef;
+    P.currentRef = currentRef;
+    if (P.manualRef && (!hands.some((c) => playerRef(c) === P.manualRef) || P.manualRef === currentRef)) {
+      P.manualRef = null;
+    }
+    if (currentRef && !P.explicitMode) state.iq.mode = "player";
+    const ref = P.manualRef || currentRef;
     const current = hands.find((c) => playerRef(c) === ref);
-    if (ref && (force || (!P.detail && !P.loading) || JSON.stringify(old) !== JSON.stringify(current))) {
-      await showPlayerHand(ref);
+    if (ref && (force || ref !== P.ref || (!P.detail && !P.loading) || prevCurrent !== currentRef || JSON.stringify(old) !== JSON.stringify(current))) {
+      await showPlayerHand(ref, false, false);
     } else if (changed) {
       P.version++; renderAudit();
     }
@@ -1055,9 +1065,12 @@ async function loadPlayerIndex(force = false) {
   }
 }
 
-async function showPlayerHand(ref, navigate = false) {
+async function showPlayerHand(ref, navigate = false, manual = false) {
   if (!PLAYER_HAND_REF.test(ref)) return;
   const P = state.player;
+  if (manual || navigate) {
+    P.manualRef = (P.currentRef && ref === P.currentRef) ? null : ref;
+  }
   if (navigate) {
     state.iq.mode = "player"; P.explicitMode = true;
     routedHash = `#player-hand/${ref}`;

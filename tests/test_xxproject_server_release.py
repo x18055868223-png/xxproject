@@ -866,3 +866,19 @@ def test_closure_ops_b4_preexec_rollback_rel_w5_and_health_bounds(tmp_path: Path
     assert health_check._check_execution_status(st_path, now_ms=now_ms, max_age_ms=120_000)["reason"] == "execution_status_clock_future"
     st_path.write_text(json.dumps({"generated_at_ms": now_ms, "mode": "SHADOW_ONLY", "writes_enabled": False, "health": ""}), encoding="utf-8")
     assert health_check._check_execution_status(st_path, now_ms=now_ms, max_age_ms=120_000)["reason"].startswith("execution_health_unrecognized")
+
+    # 4. repair_shadow_dossier_permissions is idempotent and scoped ONLY to dossier_root
+    dossier_root = tmp_path / "var" / "lib" / "xxproject" / "workbench" / "shadow_dossiers"
+    d28_hand = dossier_root / "dossiers" / "Deribit_BTC_20261128T080000Z" / "hands" / "hand_4d50e57d6ceb569a28738fbd"
+    (d28_hand / "evidence").mkdir(parents=True, exist_ok=True)
+    (d28_hand / "expected.json").write_text("{}", encoding="utf-8")
+    (d28_hand / "evidence" / "identity.json").write_text("{}", encoding="utf-8")
+    exec_sentinel = exec_dir / "sentinel.txt"
+    exec_sentinel.write_text("keep", encoding="utf-8")
+    res_rep1 = deployer.repair_shadow_dossier_permissions(dossier_root, group="bitnami")
+    res_rep2 = deployer.repair_shadow_dossier_permissions(dossier_root, group="bitnami")
+    assert res_rep1["ok"] is True and res_rep1["dirs"] >= 4 and res_rep1["files"] >= 2
+    assert res_rep2 == res_rep1
+    assert exec_sentinel.read_text(encoding="utf-8") == "keep"
+    assert deployer.main(["repair-dossier-perms", "--root-prefix", str(tmp_path), "--group", "bitnami"]) == 0
+

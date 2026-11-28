@@ -1,6 +1,6 @@
 import { btc, h, isNum, usd } from "./format.js";
 
-import { LABELS, stageText } from "./current-hand.js";
+import { LABELS, lockProgressText, stageText } from "./current-hand.js";
 
 const SKIP_REASONS = {
   COOLDOWN: "冷却顺延",
@@ -34,6 +34,15 @@ const outcomeClass = {
 const label = (status) => LABELS[status] || status;
 const sideName = (side) => side === "put" ? "Put" : side === "call" ? "Call" : "";
 export const playerRef = (card) => `${card.dossier_id}/${card.hand_id}`;
+export function selectDefaultPlayerRef(hands, apiCurrentRef = null, nowMs = Date.now()) {
+  const list = Array.isArray(hands) ? hands : [];
+  if (apiCurrentRef && list.some((c) => playerRef(c) === apiCurrentRef)) return apiCurrentRef;
+  const dueScheduled = list.find(
+    (c) => c?.sample === "SCHEDULED" && isNum(c.scheduled_at_ms) && c.scheduled_at_ms <= nowMs,
+  );
+  if (dueScheduled) return playerRef(dueScheduled);
+  return list[0] ? playerRef(list[0]) : null;
+}
 export const utc = (t) => isNum(t) ? new Date(t).toISOString().slice(0, 19).replace("T", " ") + " UTC" : "—";
 const utcShort = (t) => isNum(t) ? new Date(t).toISOString().slice(0, 16).replace("T", " ") + " UTC" : "—";
 const para = (text, cls) => h("p", { text, class: cls || null });
@@ -488,7 +497,7 @@ function renderStructuredBoard(boardText) {
   return wrap;
 }
 
-export function renderPlayerAudit(box, player, { available = true, onSelect, onTracker, onOriginals, onModelInput, modelInputUrl, onLogin, onRefresh, authenticated }) {
+export function renderPlayerAudit(box, player, { available = true, onSelect, onBackToCurrent, onTracker, onOriginals, onModelInput, modelInputUrl, onLogin, onRefresh, authenticated }) {
   if (!authenticated) {
     box.append(h("div", { class: "pad" }, para("登录后按期查阅每日交割卷宗、冻结牌面与 AI 牌手推理审计。", "muted"),
       h("button", { class: "btn secondary", type: "button", onclick: onLogin }, "登录")));
@@ -501,6 +510,8 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
   }
   const cards = player.cards.some((c) => playerRef(c) === player.ref) || !player.detail
     ? player.cards : [player.detail, ...player.cards];
+  const isHistorical = Boolean(player.currentRef && player.ref && player.ref !== player.currentRef);
+  const isCurrentRound = Boolean(player.currentRef && player.ref === player.currentRef);
   if (cards.length) {
     const byExpiry = new Map();
     for (const c of cards) {
@@ -509,21 +520,44 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
       byExpiry.get(key).push(c);
     }
     const groups = [...byExpiry.entries()].map(([expLabel, list]) => h("optgroup", { label: expLabel },
-      ...list.map((c) => h("option", {
-        value: playerRef(c),
-        text: `${expLabel} · ${samples[c.sample] || "卷宗"} · ${verdictText(c)}${c.model ? ` · AI · ${c.model}` : ""} · 发牌 ${utcShort(c.frozen_at_ms ?? c.scheduled_at_ms)}`
-      }))));
+      ...list.map((c) => {
+        const timeTag = isNum(c.frozen_at_ms)
+          ? `发牌 ${utcShort(c.frozen_at_ms)}`
+          : `计划 ${utcShort(c.scheduled_at_ms)}`;
+        return h("option", {
+          value: playerRef(c),
+          text: `${expLabel} · ${samples[c.sample] || "卷宗"} · ${verdictText(c)}${c.model ? ` · AI · ${c.model}` : ""} · ${timeTag}`,
+        });
+      })));
     const menu = h("select", { "aria-label": "按期选择交割卷宗", onchange: (e) => onSelect(e.target.value) }, ...groups);
     menu.value = player.ref || "";
     const cur = player.detail || cards.find((c) => playerRef(c) === player.ref) || cards[0];
     const curModel = modelTag(cur?.model, cur?.reasoning_effort);
     box.append(h("div", { class: "pad player-audit player-controls" },
       h("label", { class: "pa-select-label" }, h("span", { class: "muted small", text: "交割期次与手牌" }), menu),
+      isHistorical ? h("span", { class: "chip warn", text: "正在查看历史期次" })
+        : (isCurrentRound ? h("span", { class: "chip ok", text: "当前正式期次" }) : null),
+      isHistorical && typeof onBackToCurrent === "function"
+        ? h("button", { class: "chip", type: "button", onclick: onBackToCurrent }, "回到本期")
+        : null,
       cur?.sample ? h("span", { class: "chip", text: samples[cur.sample] || cur.sample }) : null,
       curModel ? h("span", { class: "chip", text: curModel }) : null,
       h("button", { class: "chip", type: "button", onclick: onRefresh }, "刷新卷宗")));
   }
   if (player.error || !player.detail) {
+    const stub = cards.find((c) => playerRef(c) === player.ref);
+    if (stub) {
+      const reasonTxt = stub.stage_reason || player.error || "卷宗详情暂不可读";
+      box.append(h("div", { class: "ev pa-stub-card" },
+        h("header", {},
+          h("b", { text: `${isNum(stub.expiry_ms) ? `${utcShort(stub.expiry_ms)} 到期` : stub.dossier_id} · ${samples[stub.sample] || "正式局"}` }),
+          h("span", { class: `chip ${verdictTone(stub.state) || "warn"}`, text: verdictText(stub) })),
+        h("dl", { class: "kv pa-meta" },
+          h("dt", { text: "计划发牌" }), h("dd", { text: utc(stub.scheduled_at_ms) }),
+          h("dt", { text: "交割到期" }), h("dd", { text: utc(stub.expiry_ms) }),
+          h("dt", { text: "当前说明" }), h("dd", { text: reasonTxt }))));
+      return;
+    }
     box.append(para(player.error || (player.indexError ? "卷宗列表暂不可读。" :
       player.ref ? "正在读取本局卷宗…" : "当前暂无可读的 AI 牌手卷宗。"), "empty pad"));
     return;
@@ -560,10 +594,11 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
     if (exportBar) left.append(exportBar);
   }
 
+  const reqStamp = isNum(d.requested_at_ms) ? ` · 请求 ${utc(d.requested_at_ms)}` : "";
   const metaRows = [
     ["运行阶段", `${stageText(d)} · 更新 ${utc(d.last_update_ms)}`],
     ["交割到期", `${utc(d.expiry_ms)}（${samples[d.sample] || d.sample}）`],
-    ["发牌与作答", `发牌 ${utc(d.frozen_at_ms)} · 作答 ${utc(d.decision?.decided_at_ms)}`],
+    ["发牌与作答", `发牌 ${utc(d.frozen_at_ms)}${reqStamp} · 作答 ${utc(d.decision?.decided_at_ms)}`],
     ["牌手模型", d.model ? `${d.model}${d.reasoning_effort ? `（推理强度 ${d.reasoning_effort}）` : ""}` : "未记录"],
     ["本手牌 Token 消耗", formatUsageText(d.usage)],
     ["ARD 依赖", judgment ? (judgment.depends_on_ard ? "原回复声明依赖锚相对动态（ARD）" : "仅按一阶责任路径成立，不依赖 ARD") : "—"],
@@ -627,10 +662,14 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
   // ── Left Lower: 事中持续追踪与到期判卷 ──
   left.append(h("h4", { class: "pa-sec-title", text: "事中持续追踪与到期判卷" }));
 
+  const lockTone = d.tracking_state === "TRACKING" ? "ok"
+    : d.tracking_state === "LOCK_BLOCKED" ? "bad"
+    : (d.tracking_state === "PENDING_LOCK" || d.tracking_state === "LINK_UNVERIFIED") ? "warn"
+    : "";
   const trackCard = h("div", { class: "ev pa-track-card" },
     h("header", {},
       h("b", { text: "同合同锁定追踪基线" }),
-      d.tracking_state ? h("span", { class: `chip ${d.tracking_state === "TRACKING" ? "ok" : ""}`,
+      d.tracking_state ? h("span", { class: `chip ${lockTone}`,
         text: [label(d.tracking_state), label(d.tracker_status)].filter(Boolean).join(" · ") }) : null));
   if (receipt) {
     const credit = receipt.economy?.net_credit_after_entry_fee_btc;
@@ -644,8 +683,20 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
     ];
     trackCard.append(h("dl", { class: "kv pa-meta" },
       ...t0Rows.flatMap(([k, v]) => [h("dt", { text: k }), h("dd", { text: v })])));
-  } else if (d.lock_reason) {
-    trackCard.append(para(`未建立锁定追踪：${d.lock_reason}`, "muted small"));
+  } else if (d.pending_lock || d.lock_reason || d.lock_requested_at_ms || d.tracking_state) {
+    const p = d.pending_lock || {};
+    const statusTxt = lockProgressText(d) || "未建立锁定追踪";
+    const lockRows = [["影子锁状态", statusTxt]];
+    if (isNum(d.lock_requested_at_ms)) lockRows.push(["申请交接", utc(d.lock_requested_at_ms)]);
+    if (isNum(p.deadline_ms)) lockRows.push(["交接截止", utc(p.deadline_ms)]);
+    if (d.lock_reason || p.last_failure_reason) {
+      lockRows.push(["锁定原因", d.lock_reason || p.last_failure_reason]);
+    }
+    trackCard.append(h("dl", { class: "kv pa-meta" },
+      ...lockRows.flatMap(([k, v]) => [h("dt", { text: k }), h("dd", { text: v })])));
+    if (d.state === "Accept") {
+      trackCard.append(para("影子锁仅作追踪交接凭据；锁定失败或过期均保留原 Accept 裁决，不重发模型、不强锁。", "muted small"));
+    }
   }
   if (d.tracker_episode_id) {
     trackCard.append(h("div", { class: "pa-jump-row" },

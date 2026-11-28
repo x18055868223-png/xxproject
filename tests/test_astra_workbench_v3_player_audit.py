@@ -525,3 +525,147 @@ def test_player_audit_shadow_exit_executable_indicative_and_legacy_fallback():
     assert tick_out["auditLegacyRows"] == 1
     assert "短腿标记 0.008100 BTC / 保护腿标记 0.001900 BTC" in tick_out["holdText"]
     assert "UTC" in tick_out["condText"]
+
+
+def test_player_audit_current_default_independent_lock_and_history_return():
+    current_hand_js = (ROOT / "deploy" / "astra_workbench_v3" / "current-hand.js").as_uri()
+    t28 = 1_795_795_200_000
+    t27 = t28 - 86_400_000
+    t26 = t28 - 2 * 86_400_000
+    d28_card = {
+        "dossier_id": "Deribit_BTC_20261128T080000Z",
+        "hand_id": "hand_4d50e57d6ceb569a28738fbd",
+        "sample": "SCHEDULED",
+        "state": "Accept",
+        "stage": "PENDING_LOCK",
+        "stage_reason": "HTTPError",
+        "side": "call",
+        "expiry_ms": t28 + 16 * 3_600_000,
+        "scheduled_at_ms": t28,
+        "frozen_at_ms": t28 + 134_450,
+        "requested_at_ms": t28 + 134_600,
+        "last_update_ms": t28 + 600_000,
+        "model": "deepseek-v4-pro",
+        "reasoning_effort": "high",
+        "tracking_state": "PENDING_LOCK",
+        "lock_reason": "HTTPError",
+        "lock_requested_at_ms": t28 + 334_869,
+        "pending_lock": {"state": "PENDING_LOCK", "attempts_count": 18, "deadline_ms": t28 + 3_934_649, "last_failure_reason": "HTTPError"},
+        "decision": {
+            "decided_at_ms": t28 + 334_649,
+            "judgment": {
+                "action": "Accept", "side": "call", "depends_on_ard": False,
+                "comparison": "Call 空间与路径更优", "put": "p", "put_counter": "pc", "call": "c", "call_counter": "cc",
+            },
+        },
+        "contracts": [],
+        "board": "1. **责任。** 示例牌面",
+    }
+    d27_card = {
+        "dossier_id": "Deribit_BTC_20261127T080000Z",
+        "hand_id": "hand_66a598b4790172fa3fd56276",
+        "sample": "SCHEDULED",
+        "state": "DATA_BLOCKED",
+        "stage": "DATA_BLOCKED",
+        "stage_reason": "需同一个采集小时的唯一 put 原生案卷，现有 0 份",
+        "expiry_ms": t27 + 16 * 3_600_000,
+        "scheduled_at_ms": t27,
+        "frozen_at_ms": None,
+        "last_update_ms": t27 + 120_566,
+    }
+    d26_card = {
+        "dossier_id": "Deribit_BTC_20261126T080000Z",
+        "hand_id": "hand_52497f480697fc44b6dc1046",
+        "sample": "SCHEDULED",
+        "state": "TIMEOUT",
+        "stage": "DELIVERY_UNKNOWN",
+        "stage_reason": "TimeoutError",
+        "expiry_ms": t26 + 16 * 3_600_000,
+        "scheduled_at_ms": t26,
+        "frozen_at_ms": t26 + 130_437,
+        "last_update_ms": t26 + 490_530,
+    }
+    out = _run_node(
+        f"""
+        const ch = await import("{current_hand_js}");
+        const pa = await import("{PLAYER_AUDIT_JS}");
+        const box = document.createElement("div");
+        box.id = "current-hand";
+        document.getElementById = (id) => (id === "current-hand" ? box : null);
+        globalThis.fetch = async () => ({{
+          ok: true, status: 200, headers: {{ get: () => null }},
+          text: async () => JSON.stringify({{ hand: p.d28 }}),
+        }});
+        ch.setSession(true);
+        await new Promise((r) => setTimeout(r, 20));
+        const bannerText = box.textContent;
+
+        const cards = [p.d28, p.d27, p.d26];
+        const currentRef = pa.selectDefaultPlayerRef(cards, `${{p.d28.dossier_id}}/${{p.d28.hand_id}}`, p.nowMs);
+        const blockedCurrentRef = pa.selectDefaultPlayerRef([p.d27, p.d26], null, p.nowMs);
+
+        const walk = (n, out = []) => {{
+          if (n && n.attrs) {{
+            out.push(n);
+            for (const c of n.childNodes) walk(c, out);
+          }}
+          return out;
+        }};
+        let backClicked = false;
+        const curBox = document.createElement("div");
+        renderPlayerAudit(curBox, {{
+          cards, ref: currentRef, currentRef, manualRef: null, detail: p.d28, expanded: new Set(),
+        }}, {{
+          authenticated: true, available: true, onSelect: () => {{}}, onBackToCurrent: () => {{ backClicked = true; }},
+          onTracker: () => {{}}, onOriginals: () => {{}}, onLogin: () => {{}}, onRefresh: () => {{}}, modelInputUrl: api.playerModelInputUrl,
+        }});
+        const curText = curBox.textContent;
+
+        const histBox = document.createElement("div");
+        renderPlayerAudit(histBox, {{
+          cards, ref: `${{p.d26.dossier_id}}/${{p.d26.hand_id}}`, currentRef, manualRef: `${{p.d26.dossier_id}}/${{p.d26.hand_id}}`,
+          detail: p.d26, expanded: new Set(),
+        }}, {{
+          authenticated: true, available: true, onSelect: () => {{}}, onBackToCurrent: () => {{ backClicked = true; }},
+          onTracker: () => {{}}, onOriginals: () => {{}}, onLogin: () => {{}}, onRefresh: () => {{}}, modelInputUrl: api.playerModelInputUrl,
+        }});
+        const histBtns = walk(histBox).filter((n) => n.tagName === "button" && n.textContent === "回到本期");
+        for (const fn of histBtns[0]?.listeners?.click || []) fn();
+
+        const stubBox = document.createElement("div");
+        const stub = {{ ...p.d28, state: "EVIDENCE_UNAVAILABLE", stage: "EVIDENCE_UNAVAILABLE", stage_reason: "PermissionError", frozen_at_ms: null }};
+        renderPlayerAudit(stubBox, {{
+          cards: [stub, p.d26], ref: `${{stub.dossier_id}}/${{stub.hand_id}}`, currentRef: `${{stub.dossier_id}}/${{stub.hand_id}}`,
+          detail: null, error: "其他原因", expanded: new Set(),
+        }}, {{
+          authenticated: true, available: true, onSelect: () => {{}}, onBackToCurrent: () => {{}},
+          onTracker: () => {{}}, onOriginals: () => {{}}, onLogin: () => {{}}, onRefresh: () => {{}}, modelInputUrl: api.playerModelInputUrl,
+        }});
+        return {{
+          pendingLabel: ch.LABELS.PENDING_LOCK,
+          bannerText,
+          currentRef,
+          blockedCurrentRef,
+          curText,
+          histText: histBox.textContent,
+          backClicked,
+          stubText: stubBox.textContent,
+        }};
+        """,
+        {"d28": d28_card, "d27": d27_card, "d26": d26_card, "nowMs": t28 + 600_000},
+    )
+    assert out["pendingLabel"] == "影子锁待核实"
+    assert "2026-11-28 到期" in out["bannerText"]
+    assert "已接受 · Accept / Call" in out["bannerText"]
+    assert "影子锁：影子锁待核实（已尝试 18 次 · HTTPError）" in out["bannerText"]
+    assert out["currentRef"] == "Deribit_BTC_20261128T080000Z/hand_4d50e57d6ceb569a28738fbd"
+    assert out["blockedCurrentRef"] == "Deribit_BTC_20261127T080000Z/hand_66a598b4790172fa3fd56276"
+    assert "当前正式期次" in out["curText"]
+    assert "已接受 · Accept / Call" in out["curText"]
+    assert "请求 2026-11-27 16:02:14 UTC" in out["curText"]
+    assert "影子锁仅作追踪交接凭据；锁定失败或过期均保留原 Accept 裁决" in out["curText"]
+    assert "正在查看历史期次" in out["histText"]
+    assert out["backClicked"] is True
+    assert "2026-11-28 08:00 UTC 到期" in out["stubText"]
+    assert "PermissionError" in out["stubText"]
+
