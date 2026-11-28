@@ -963,7 +963,8 @@ def _format_vol_background_p0(
     """Render concise neutral IV/RV24 background for p0_strict@1 without touching legacy_v1 or distance scale."""
     atm_ivs = {}
     short_mark_ivs = {}
-    for s in ('put', 'call'):
+    present_sides = [s for s in ('put', 'call') if s in cases]
+    for s in present_sides:
         read_at = cards[s]['read_at_ms']
         expiry = contracts[s]['expiry_ms']
         w_row = entry(cases[s], 'L3.expiry_walls')
@@ -992,20 +993,22 @@ def _format_vol_background_p0(
     if len(atm_ivs) == 2 and abs(atm_ivs['put'] - atm_ivs['call']) < 1e-9:
         iv_parts.append(f"交易所本期ATM IV {atm_ivs['put']:.2f}%")
     elif atm_ivs:
-        atm_txt = '/'.join(f"{s.title()} {atm_ivs[s]:.2f}%" for s in ('put', 'call') if s in atm_ivs)
+        atm_txt = '/'.join(f"{s.title()} {atm_ivs[s]:.2f}%" for s in present_sides if s in atm_ivs)
         iv_parts.append(f"交易所本期ATM IV {atm_txt}")
     if short_mark_ivs:
-        mk_txt = '/'.join(f"{s.title()} {short_mark_ivs[s]:.2f}%" for s in ('put', 'call') if s in short_mark_ivs)
+        mk_txt = '/'.join(f"{s.title()} {short_mark_ivs[s]:.2f}%" for s in present_sides if s in short_mark_ivs)
         iv_parts.append(f"短腿盘口mark_iv {mk_txt}")
     iv_summary = '，'.join(iv_parts)
 
-    l4_row = entry(cases['put'], 'L4.expiry_vol')
-    l4_vals = l4_row.get('values') if isinstance(l4_row, Mapping) and isinstance(l4_row.get('values'), Mapping) else {}
-    if not l4_vals.get('realized_vol'):
-        l4_call = entry(cases['call'], 'L4.expiry_vol')
-        l4_call_vals = l4_call.get('values') if isinstance(l4_call, Mapping) and isinstance(l4_call.get('values'), Mapping) else {}
-        if l4_call_vals.get('realized_vol'):
-            l4_row, l4_vals = l4_call, l4_call_vals
+    l4_row, l4_vals = {}, {}
+    for s in present_sides:
+        cand_row = entry(cases[s], 'L4.expiry_vol')
+        cand_vals = cand_row.get('values') if isinstance(cand_row, Mapping) and isinstance(cand_row.get('values'), Mapping) else {}
+        if not l4_row:
+            l4_row, l4_vals = cand_row, cand_vals
+        if cand_vals.get('realized_vol'):
+            l4_row, l4_vals = cand_row, cand_vals
+            break
 
     l4_asof = l4_row.get('asof_ms') if isinstance(l4_row, Mapping) else None
     if type(l4_asof) is int and l4_asof > cutoff:
@@ -1050,20 +1053,33 @@ def _format_vol_background_p0(
 def build_input(put_case, call_case, put_card, call_card, *, events=None, index_path=None,
                 ard_history=None, ard_band_snapshot=None, include_ard=True,
                 input_profile=INPUT_PROFILE_LEGACY,
-                offline_reconstructed_rv_clock_ms=None):
+                offline_reconstructed_rv_clock_ms=None,
+                absent_sides=None):
     """Return player-facing Markdown. Raises HandNotDealt before rendering on known events."""
     if input_profile not in SUPPORTED_INPUT_PROFILES:
         raise ValueError(f'unsupported input_profile: {input_profile}')
     strict_profile = input_profile == INPUT_PROFILE_P0_STRICT
-    cases, raw_cards = {"put": put_case, "call": call_case}, {"put": put_card, "call": call_card}
+    cases, raw_cards = {}, {}
+    for s, cs, cd in (('put', put_case, put_card), ('call', call_case, call_card)):
+        if (cs is None) != (cd is None):
+            raise ValueError(f'incomplete {s} case/card pair')
+        if cs is not None and cd is not None:
+            cases[s] = cs
+            raw_cards[s] = cd
+    if not cases:
+        raise ValueError('at least one complete side (case and card) is required')
     contracts = {s: bind(cases[s], raw_cards[s], s) for s in cases}
-    pc, cc = contracts["put"], contracts["call"]
-    if pc["expiry_ms"] != cc["expiry_ms"] or raw_cards['put'].get('round') != raw_cards['call'].get('round'):
-        raise ValueError("pair must share expiry and reading round")
-    # Native archive freezes the two candidates serially, normally seconds apart.
-    if abs(raw_cards['put']['read_at_ms'] - raw_cards['call']['read_at_ms']) > 60_000:
-        raise ValueError("pair readings more than one minute apart")
-    chart_audits = {s: chart_points_audit(index_path, pc['expiry_ms'], raw_cards[s]['read_at_ms']) for s in cases}
+    present_sides = tuple(cases.keys())
+    primary_side = present_sides[0]
+    primary_contract = contracts[primary_side]
+    if len(present_sides) == 2:
+        pc, cc = contracts["put"], contracts["call"]
+        if pc["expiry_ms"] != cc["expiry_ms"] or raw_cards['put'].get('round') != raw_cards['call'].get('round'):
+            raise ValueError("pair must share expiry and reading round")
+        # Native archive freezes the two candidates serially, normally seconds apart.
+        if abs(raw_cards['put']['read_at_ms'] - raw_cards['call']['read_at_ms']) > 60_000:
+            raise ValueError("pair readings more than one minute apart")
+    chart_audits = {s: chart_points_audit(index_path, primary_contract['expiry_ms'], raw_cards[s]['read_at_ms']) for s in cases}
     cards = {}
     boundary_replaced = {}
     for s in cases:
@@ -1100,25 +1116,29 @@ def build_input(put_case, call_case, put_card, call_card, *, events=None, index_
     dual_asof_note = _format_dual_asof_notes(boundary_replaced, chart_audits, l2_obs, contracts, strict=strict_profile)
     if dual_asof_note:
         responsibility.append(dual_asof_note)
-    if scales['put'] == scales['call']:
+    if len(scales) == 2 and scales['put'] == scales['call']:
         scale_text = f"本期到期隐含波动给出的剩余预期波动尺度：{fmt(scales['put'])}" + (" USD。" if scales['put'] else "。")
+    elif len(scales) == 1:
+        only_scale = scales[primary_side]
+        scale_text = f"本期到期隐含波动给出的剩余预期波动尺度：{fmt(only_scale)}" + (" USD。" if only_scale else "。")
     else:
         scale_text = "本期到期隐含波动剩余尺度：" + "；".join(f"{s.title()} {fmt(scales[s])}" + (" USD" if scales[s] else "") for s in cases) + "。"
     if not all(scales.values()):
         scale_text += "未提供尺度的一侧不按美元距离判断松紧，继续判断路径。"
     if advisory_events:
         scale_text += f"到期前已知常规日程（供牌手审查）：{'、'.join(advisory_events)}。"
-    cutoff = put_card['read_at_ms']
-    g = entry(put_case, 'L3.gex.structure')
+    primary_case = cases[primary_side]
+    cutoff = raw_cards[primary_side]['read_at_ms']
+    g = entry(primary_case, 'L3.gex.structure')
     net = number((g.get('values') or {}).get('total_net_gex')) if usable(g, cutoff, HOUR) else None
     if net is not None:
         scale_text += f"市场净Gamma为{'负' if net < 0 else '正' if net > 0 else '零'}，净GEX约{net / 1e8:.1f}亿美元量级；不证明本侧义务方向。"
-    anchor = entry(put_case, 'L3.space.anchor')
+    anchor = entry(primary_case, 'L3.space.anchor')
     av = (anchor.get('values') or {}).get('anchor') or {}
     flip = number(av.get('effective_flip_point')) if usable(anchor, cutoff, HOUR) and av.get('freshness') == 'FRESH' else None
     if flip is not None:
-        put_ref_label = "合格图表末点" if 'put' in boundary_replaced else "现价"
-        scale_text += f"翻转参考{fmt(flip)}，{put_ref_label}在其{side_of(cards['put']['index_usd'],flip)}。"
+        ref_label = "合格图表末点" if primary_side in boundary_replaced else "现价"
+        scale_text += f"翻转参考{fmt(flip)}，{ref_label}在其{side_of(cards[primary_side]['index_usd'],flip)}。"
         for s,c in contracts.items():
             idx, short, long = cards[s]['index_usd'], c['short_strike_usd'], c['long_strike_usd']
             outside = idx > short if s == 'put' else idx < short
@@ -1155,18 +1175,21 @@ def build_input(put_case, call_case, put_card, call_card, *, events=None, index_
         ard_facts = ard_facts_for_evidence(
             ard_history,
             index_path,
-            expiry_ms=pc['expiry_ms'],
+            expiry_ms=primary_contract['expiry_ms'],
             cutoff_ms=min_read,
             band_snapshot=ard_band_snapshot,
             input_profile=input_profile,
         )
-        current_pin = (values(put_case,'L3.expiry_walls').get('walls') or {}).get('pin')
+        current_pin = (values(primary_case,'L3.expiry_walls').get('walls') or {}).get('pin')
         ard_text = '\n\n'+ard.render(ard_facts,current_pin=current_pin,disclose_backfill=strict_profile)
-    sections = [path_section(cases[s],cards[s],contracts[s],scales[s],*groups[s],index_path,
-                             report_protection=include_ard,
-                             boundary_replaced=boundary_replaced.get(s),
-                             disclose_full_extremum=strict_profile) for s in cases]
-    row = entry(put_case, 'L5.volume_price')
+    section_by_side = {
+        s: path_section(cases[s], cards[s], contracts[s], scales[s], *groups[s], index_path,
+                        report_protection=include_ard,
+                        boundary_replaced=boundary_replaced.get(s),
+                        disclose_full_extremum=strict_profile)
+        for s in cases
+    }
+    row = entry(primary_case, 'L5.volume_price')
     if strict_profile:
         spot_qual = inspect_spot_qualification(row, cutoff=cutoff)
         derived = spot_qual['derived']
@@ -1297,28 +1320,79 @@ def build_input(put_case, call_case, put_card, call_card, *, events=None, index_
         else:
             spot_text = '现货成交限定未提供；继续依据位置与路径判断。'
     # The without-ARD mode is a replay of the frozen first-order baseline.
-    decision_policy = (
-        '至少一侧责任路径条件可接受时，必须Accept并选侧。只有Put和Call分别有足以排除其承担条件的具体不利事实，才Reject。'
-        '关键反证必须审查，但不自动排除该侧。没有可接受侧且关键资料实质阻塞判断时，才Unknown。'
-        if include_ard else '至少一侧可接受就必须Accept并选侧；两侧都有具体不利事实才Reject；没有可接受侧且关键资料实质阻塞判断才Unknown。'
+    is_single_side = len(cases) == 1
+    avail_title = primary_side.title()
+    absent_side = 'call' if primary_side == 'put' else 'put'
+    absent_info = absent_sides.get(absent_side) if isinstance(absent_sides, Mapping) else None
+    absent_reason = (
+        (absent_info.get('reason') if isinstance(absent_info, Mapping) else str(absent_info))
+        or '完整市场发现确认无合格价差候选'
     )
+    if is_single_side:
+        decision_policy = (
+            f'本局仅为单侧正式发牌（仅 {avail_title} 侧存在合格价差；{absent_side.title()} 侧已由完整市场发现确认无合格候选：{absent_reason}）。'
+            f'只能围绕 {avail_title} 侧独立评估：若 {avail_title} 责任路径条件可接受，必须输出 Accept/{avail_title}；'
+            f'禁止输出 Accept/{absent_side.title()}；若 {avail_title} 存在足以排除承担条件的具体不利事实，输出 Reject；'
+            f'若缺少关键资料实质阻塞判断，才输出 Unknown。'
+        )
+    else:
+        decision_policy = (
+            '至少一侧责任路径条件可接受时，必须Accept并选侧。只有Put和Call分别有足以排除其承担条件的具体不利事实，才Reject。'
+            '关键反证必须审查，但不自动排除该侧。没有可接受侧且关键资料实质阻塞判断时，才Unknown。'
+            if include_ard else '至少一侧可接受就必须Accept并选侧；两侧都有具体不利事实才Reject；没有可接受侧且关键资料实质阻塞判断才Unknown。'
+        )
     protection_review = (
         '\n历史窗内曾达到或越过保护腿，即使现已回到责任外，也须纳入该侧最强反证审查。区分窗首已越界、'
         '窗内确认的进入、最近进入与回收、当前所在侧。最近较浅进入不能替代完整历史，旧越界不单独构成Reject。'
         if include_ard else ''
     )
-    rejection_output = 'Reject分别写明两侧排除承担条件的具体依据' if include_ard else 'Reject分别写两侧反证'
+    if is_single_side:
+        rejection_output = f'Reject写明排除 {avail_title} 侧承担条件的具体依据'
+    else:
+        rejection_output = 'Reject分别写明两侧排除承担条件的具体依据' if include_ard else 'Reject分别写两侧反证'
     profile_line = (
         '输入规范：p0_strict@1（严格as-of；未对齐观测不升格为已成立反证；缺失不等于否定）。\n\n'
         if strict_profile else ''
     )
-    hours=(pc['expiry_ms']-max(c['read_at_ms'] for c in cards.values()))/HOUR
+    hours = (primary_contract['expiry_ms'] - max(c['read_at_ms'] for c in cards.values())) / HOUR
+    if is_single_side:
+        read_line = (
+            f"{avail_title}读取于{stamp(cards[primary_side]['read_at_ms'])}；这是冻结截面，不冒称当前行情。"
+            f"{absent_side.title()}侧本轮无合格价差候选（{absent_reason}），不提供{absent_side.title()}合约。"
+        )
+        rules_intro = (
+            f'现象≠结论。本局仅有一侧可用合约（{avail_title}），按标准完成 {avail_title} 侧审查并独立决策，'
+            f'严禁 Accept/{absent_side.title()}。{decision_policy}'
+        )
+        compare_rule = (
+            'Accept仅在存在可接受侧时给出并写明承担条件与有效破坏标准，Accept只表示路径条件可接受，不表示已授权交易。'
+            f'{protection_review}'
+        )
+        put_section = section_by_side['put'] if 'put' in section_by_side else f'本轮经完整市场发现确认 Put 侧无合格价差候选（{absent_reason}），不提供 Put 合约，禁止 Accept/Put。'
+        call_section = section_by_side['call'] if 'call' in section_by_side else f'本轮经完整市场发现确认 Call 侧无合格价差候选（{absent_reason}），不提供 Call 合约，禁止 Accept/Call。'
+        closing_guide = (
+            f'先给出 {avail_title} 侧可核查的责任路径判断（含到本次交割前对该责任有利与不利的具体路径，以及 {absent_side.title()} 侧缺失原因确认）；'
+            f'再给 Accept/{avail_title}、Reject 或 Unknown 结论（严禁 Accept/{absent_side.title()}），说明可用侧的最强反证与理由，最后冻结承担条件与有效破坏标准。'
+            '理由须能沿“责任边界→入区前位置→穿越与当前所在侧→承担条件”追溯；无中间站直接审短腿。不要只复述事实、用“保持责任外”循环解释选择，或用过去24小时替未来剩余寿命作预测；不能为了支持预选结论才倒定承担条件。条件与破坏标准是独立评估，不回填现象。'
+        )
+    else:
+        read_line = f"Put读取于{stamp(raw_cards['put']['read_at_ms'])}，Call读取于{stamp(raw_cards['call']['read_at_ms'])}；这是冻结截面，不冒称当前行情。"
+        rules_intro = f'现象≠结论。两侧须按同一标准审完，展示顺序不代表优先级，不能在先读一侧勉强可接受后停止。{decision_policy}'
+        compare_rule = (
+            '双方都可建立时必须择优：围绕本次交割前的责任路径，比较入区前结构、测试与回收、当前所在侧，以及在剩余期限和本期尺度下哪侧更少依赖尚未出现的阻断或回收。指出具体相对优势及最强反证；不能用“这侧也能接受”代替比较，也不能给两侧设置不同的宽严标准。距离、OI、穿越次数不单独决定选侧；确无可证实优势时如实说明，仍作有条件的Accept选择，不编造优势或因平局弃权。接受只表示路径条件可接受，不表示已授权交易。'
+            f'{protection_review}'
+        )
+        put_section = section_by_side['put']
+        call_section = section_by_side['call']
+        closing_guide = (
+            '先用两侧各一小段给出可核查的责任路径判断，包含到本次交割前对该责任有利与不利的具体路径；再给Accept、Reject或Unknown及选侧，说明相对另一侧胜在哪里、最强反证是什么，最后冻结承担条件与有效破坏标准。理由须能沿“责任边界→入区前位置→穿越与当前所在侧→承担条件”追溯；无中间站直接审短腿。不要只复述事实、用“保持责任外”循环解释选择，或用过去24小时替未来剩余寿命作预测；不能为了支持预选侧才倒定承担条件。条件与破坏标准是独立评估，不回填现象。'
+        )
     return f"""# AI牌手完整输入
 
 ## 这是什么局
 
-Deribit BTC末日轮信用垂直价差，BTC结算，到期{stamp(pc['expiry_ms'])}，剩余约{hours:.2f}小时。使用引擎真实候选，不外移短腿。判断这次交割前接不接短腿责任，不预测价格。
-Put读取于{stamp(put_card['read_at_ms'])}，Call读取于{stamp(call_card['read_at_ms'])}；这是冻结截面，不冒称当前行情。已检查所提供的寿命内事件记录；没有附带明确干扰标记，不自行弃权。
+Deribit BTC末日轮信用垂直价差，BTC结算，到期{stamp(primary_contract['expiry_ms'])}，剩余约{hours:.2f}小时。使用引擎真实候选，不外移短腿。判断这次交割前接不接短腿责任，不预测价格。
+{read_line}已检查所提供的寿命内事件记录；没有附带明确干扰标记，不自行弃权。
 
 ## 怎么读
 
@@ -1326,8 +1400,8 @@ Put读取于{stamp(put_card['read_at_ms'])}，Call读取于{stamp(call_card['rea
 
 ## 规则
 
-现象≠结论。两侧须按同一标准审完，展示顺序不代表优先级，不能在先读一侧勉强可接受后停止。{decision_policy}
-双方都可建立时必须择优：围绕本次交割前的责任路径，比较入区前结构、测试与回收、当前所在侧，以及在剩余期限和本期尺度下哪侧更少依赖尚未出现的阻断或回收。指出具体相对优势及最强反证；不能用“这侧也能接受”代替比较，也不能给两侧设置不同的宽严标准。距离、OI、穿越次数不单独决定选侧；确无可证实优势时如实说明，仍作有条件的Accept选择，不编造优势或因平局弃权。接受只表示路径条件可接受，不表示已授权交易。{protection_review}
+{rules_intro}
+{compare_rule}
 关键反证须正面审查：价格净路径向该侧短腿靠近、余量收缩，且同窗现货主动流同向时，检查较近窗口是否有可验证缓和、责任是否真正回收。Put的下行/净卖与Call的上行/净买分别是不利组合，反向流不能照搬；若另有已观测的归一化距离紧缩、重复进入或仍留区内，进一步判断是否与本侧承担条件不相容。反复穿过的Gamma位或同位属性，不得仅因地理上介于现价与短腿之间就被赋予“可靠阻挡力”；若因距离或余量更大而选择承受不利现货流的一侧，必须正面解释为何该责任仍可承担，不能仅因“增强未确认”淡化既成反证。关键反证候选不自动排除，但充分排除后不能靠历史未进入、另一侧不完美或维持Accept比例强行承保。一侧被排除而另一侧可接受就选另一侧，两侧被排除才Reject；未进入也不等于当前路径有利。
 
 ## 本局牌面
@@ -1336,9 +1410,9 @@ Put读取于{stamp(put_card['read_at_ms'])}，Call读取于{stamp(call_card['rea
 
 2. **空间背景：尺度、体制、翻转轴、Pin。** {scale_text} {vol_bg_text + ' ' if vol_bg_text else ''}{pin_text}{ard_text}
 
-3. **Put责任路径，入区前由近到远。** {sections[0]}
+3. **Put责任路径，入区前由近到远。** {put_section}
 
-4. **Call责任路径，入区前由近到远。** {sections[1]}
+4. **Call责任路径，入区前由近到远。** {call_section}
 
 5. **现货量价与主动流。** {spot_text}
 
@@ -1346,7 +1420,7 @@ Put读取于{stamp(put_card['read_at_ms'])}，Call读取于{stamp(call_card['rea
 
 ## 读完后另写
 
-先用两侧各一小段给出可核查的责任路径判断，包含到本次交割前对该责任有利与不利的具体路径；再给Accept、Reject或Unknown及选侧，说明相对另一侧胜在哪里、最强反证是什么，最后冻结承担条件与有效破坏标准。理由须能沿“责任边界→入区前位置→穿越与当前所在侧→承担条件”追溯；无中间站直接审短腿。不要只复述事实、用“保持责任外”循环解释选择，或用过去24小时替未来剩余寿命作预测；不能为了支持预选侧才倒定承担条件。条件与破坏标准是独立评估，不回填现象。
+{closing_guide}
 零站与历史未进入不构成已证实的结构缓冲；反复穿过的Gamma位或同位属性，不得仅因地理上介于现价与短腿之间就被赋予“可靠阻挡力”。若价格沿通向该侧责任的方向接近已列Pin，且同窗现货主动净流与该接近同向，把剩余路径余量收缩列为承担条件的复核提醒；不把Pin视为吸附保证，也不新增独立Accept/Reject或退出触发；若入场后出现新增重大反证或安全余量实质消耗，将由事中事件门独立审查原承担条件是否仍成立（并不必等到机械越界才退出）。期权Put净主动卖不等于标的下行净流，4h/12h净流不能确认最近5分钟同向运动。
 压力变化只用同源、同口径、可核验的相邻不重叠窗口比较；不等长窗口不能直接比净流绝对额。若存在可核验的近4小时不利价流同向压力，须作为当前已成立反证正面处理；选择承受不利现货流的一侧时，必须正面解释为何该责任仍可承担，不以“增强未确认”或近5分钟小幅回落淡化。资料不足就写“目前没有确认压力已经缓和”，不改写成“已证明增强”。小幅反弹、Pin或同位多个属性不能自动抵消较长窗口反证。后续新低只能进后续截面，不能倒灌旧牌面，也不自动成为承保机会。
 {rejection_output}；Unknown仅写真正阻塞项。不用后来的盈亏改写牌面。

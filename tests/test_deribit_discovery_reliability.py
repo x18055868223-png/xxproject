@@ -1829,16 +1829,23 @@ def test_shadow_tracking_prepare_deal_debounce_classifications_and_dual_cases(tm
         mode["call_above_max"] = True
         wb._expiry_gamma["computed_at_ms"] = clock[0] - 1_000
         wb._expiry_gamma["realized_vol"]["rv_computed_at_ms"] = clock[0] - 1_000
+        wb._expiry_gamma["realized_vol"]["rv_available_at_ms"] = clock[0] - 500
         write_fmz(snaps, native_gate(ts=clock[0] - 1000), now=clock[0])
-        r_single = service("prepare_deal", {"target_expiry_ms": expiry, "slot_ms": slot, "allow_refresh": True})
+        r_single = service("prepare_deal", {"target_expiry_ms": expiry, "slot_ms": slot, "allow_refresh": True, "input_profile": "p0_strict@1"})
         assert r_single["refreshed"] is True
         assert r_single["readiness_status"] == "MARKET_SINGLE_SIDE_ONLY"
-        assert "cases" not in r_single
+        assert r_single["ready_for_deal"] is True
+        assert r_single["blockers"] == []
+        assert "call_market_candidate_absent" in r_single["reasons"]
+        assert set(r_single["cases"]) == {"put"}
+        assert "call" in r_single["absent_sides"]
 
-        # Subsequent call >20s later on MARKET_SINGLE_SIDE_ONLY does NOT wastefully refresh
+        # Subsequent call >20s later on MARKET_SINGLE_SIDE_ONLY does NOT wastefully refresh and keeps ready single-side case
         clock[0] += 25_000
         wires_before_single2 = len(wire_log)
-        r_single2 = service("prepare_deal", {"target_expiry_ms": expiry, "slot_ms": slot, "allow_refresh": True})
+        r_single2 = service("prepare_deal", {"target_expiry_ms": expiry, "slot_ms": slot, "allow_refresh": True, "input_profile": "p0_strict@1"})
         assert r_single2["readiness_status"] == "MARKET_SINGLE_SIDE_ONLY"
+        assert r_single2["ready_for_deal"] is True
+        assert set(r_single2["cases"]) == {"put"}
         assert r_single2["refreshed"] is False
         assert len(wire_log) == wires_before_single2

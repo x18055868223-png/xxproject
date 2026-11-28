@@ -4833,6 +4833,7 @@ class AstraWorkbench:
             )
             sides: dict[str, dict[str, Any]] = {}
             market_absent_by_side: dict[str, bool] = {}
+            structural_absent_by_side: dict[str, bool] = {}
             cand_list = [c for c in (view.get("candidates") or []) if isinstance(c, Mapping)]
             disc_cands = disc_obj.get("candidates") if isinstance(disc_obj.get("candidates"), Mapping) else {}
             for side in ("put", "call"):
@@ -4907,11 +4908,17 @@ class AstraWorkbench:
                 )
                 structural_no_spread = (
                     isinstance(d_pop, Mapping)
-                    and int(d_pop.get("total_qualified") or 0) == 0
+                    and type(d_pop.get("total_qualified")) is int
+                    and d_pop.get("total_qualified") == 0
                     and not d_pop.get("unacquired")
                     and not d_pop.get("delta_missing_or_invalid")
                     and disc_status.get("upstream_code") is None
                     and disc_side_status == "gap"
+                )
+                structural_absent_by_side[side] = (
+                    (not formal_ok)
+                    and (not has_capture_err)
+                    and structural_no_spread
                 )
                 market_absent_by_side[side] = (
                     (not formal_ok)
@@ -5003,21 +5010,33 @@ class AstraWorkbench:
                     if isinstance(s_exp, int) and s_exp != target_expiry_ms:
                         any_expiry_mismatch = True
                         reasons.append(f"{s}_expiry_mismatch")
+            eligible_sides = [s for s in ("put", "call") if sides[s]["formal_evidence_eligible"]]
             non_eligible_sides = [s for s in ("put", "call") if not sides[s]["formal_evidence_eligible"]]
             all_missing_market_absent = bool(non_eligible_sides) and all(
                 market_absent_by_side[s] for s in non_eligible_sides
+            )
+            single_side_confirmed_absent = len(eligible_sides) == 1 and all_missing_market_absent
+            both_sides_confirmed_absent = len(eligible_sides) == 0 and all_missing_market_absent
+            structural_causes_partial = bool(
+                capture_state in {"PARTIAL", "INCOMPLETE"}
+                and disc_status.get("upstream_code") is None
+                and all_missing_market_absent
+                and any(structural_absent_by_side.get(s) for s in non_eligible_sides)
             )
             quote_hold_ms = int(getattr(unsuitable, "QUOTE_HOLD_MS", 180_000))
             view_stale = isinstance(view_updated_ms, int) and (now - view_updated_ms) > quote_hold_ms
             view_pre_slot = isinstance(slot_ms, int) and now >= slot_ms and (
                 view_updated_ms is None or view_updated_ms < slot_ms
             )
-            quote_stale = any(
+            active_sides = tuple(eligible_sides) if single_side_confirmed_absent else ("put", "call")
+            active_expiry_matches = all(sides[s]["expiry_matches"] for s in active_sides)
+            active_slot_ok = all(sides[s]["slot_window_ok"] for s in active_sides)
+            active_skew_ok = pair_skew_ok if len(active_sides) == 2 else True
+            active_quote_stale = any(
                 isinstance(sides[s]["valuation_ts_ms"], int)
                 and (now - int(sides[s]["valuation_ts_ms"])) > quote_hold_ms
-                for s in ("put", "call")
+                for s in active_sides
             )
-            both_slot_ok = sides["put"]["slot_window_ok"] and sides["call"]["slot_window_ok"]
             required_l3_l4_ok = (l3_walls_ok and l4_rv_ok) if effective_profile == "p0_strict@1" else l3_walls_ok
 
             if not view or not view.get("candidates"):
@@ -5029,32 +5048,45 @@ class AstraWorkbench:
                     reasons.append("workbench_view_empty")
             elif any_expiry_mismatch:
                 readiness_status = "EXPIRY_MISMATCH"
-            elif all_missing_market_absent and not view_stale and not view_pre_slot:
-                readiness_status = "MARKET_SINGLE_SIDE_ONLY"
-                for s in non_eligible_sides:
-                    reasons.append(f"{s}_market_candidate_absent")
-            elif not both_eligible and cooldown_ms > 0:
-                readiness_status = "DERIBIT_429_COOLDOWN"
-                reasons.append("deribit_cooldown_active")
-            elif not both_eligible and view_pre_slot and all_missing_market_absent:
-                readiness_status = "STALE_OR_PRE_SLOT_VIEW"
-                reasons.append("pre_slot_view")
-            elif not both_eligible or capture_state in {"PARTIAL", "INCOMPLETE", "MAINTENANCE"}:
+            elif not (both_eligible or single_side_confirmed_absent):
+                if cooldown_ms > 0:
+                    readiness_status = "DERIBIT_429_COOLDOWN"
+                    reasons.append("deribit_cooldown_active")
+                elif view_pre_slot and all_missing_market_absent:
+                    readiness_status = "STALE_OR_PRE_SLOT_VIEW"
+                    reasons.append("pre_slot_view")
+                elif view_stale and all_missing_market_absent:
+                    readiness_status = "STALE_OR_PRE_SLOT_VIEW"
+                    reasons.append("view_or_quote_stale")
+                elif both_sides_confirmed_absent and (
+                    capture_state not in {"PARTIAL", "INCOMPLETE", "MAINTENANCE"} or structural_causes_partial
+                ):
+                    readiness_status = "MARKET_NO_ELIGIBLE_CANDIDATES"
+                    for s in non_eligible_sides:
+                        reasons.append(f"{s}_market_candidate_absent")
+                else:
+                    readiness_status = "DISCOVERY_INCOMPLETE"
+                    for s in non_eligible_sides:
+                        reasons.append(f"{s}_not_eligible")
+                    if capture_state in {"PARTIAL", "INCOMPLETE", "MAINTENANCE"}:
+                        reasons.append(f"capture_state_{str(capture_state).lower()}")
+            elif capture_state == "MAINTENANCE" or (
+                capture_state in {"PARTIAL", "INCOMPLETE"} and not structural_causes_partial
+            ):
                 readiness_status = "DISCOVERY_INCOMPLETE"
-                for s in non_eligible_sides:
-                    reasons.append(f"{s}_not_eligible")
-                if capture_state in {"PARTIAL", "INCOMPLETE", "MAINTENANCE"}:
-                    reasons.append(f"capture_state_{str(capture_state).lower()}")
-            elif not (sides["put"]["expiry_matches"] and sides["call"]["expiry_matches"]):
+                reasons.append(f"capture_state_{str(capture_state).lower()}")
+            elif not active_expiry_matches:
                 readiness_status = "EXPIRY_MISMATCH"
                 reasons.append("candidate_expiry_mismatch")
-            elif not both_slot_ok or not pair_skew_ok or view_stale or quote_stale:
+            elif not active_slot_ok or not active_skew_ok or view_stale or active_quote_stale or (single_side_confirmed_absent and view_pre_slot):
                 readiness_status = "STALE_OR_PRE_SLOT_VIEW"
-                if not both_slot_ok:
+                if not active_slot_ok:
                     reasons.append("valuation_before_slot")
-                if not pair_skew_ok:
+                if not active_skew_ok:
                     reasons.append("pair_skew_exceeded")
-                if view_stale or quote_stale:
+                if single_side_confirmed_absent and view_pre_slot:
+                    reasons.append("pre_slot_view")
+                if view_stale or active_quote_stale:
                     reasons.append("view_or_quote_stale")
             elif not required_l3_l4_ok:
                 readiness_status = "L3_OR_L4_INCOMPLETE"
@@ -5062,8 +5094,24 @@ class AstraWorkbench:
                     reasons.append("l3_expiry_walls_missing_or_stale")
                 if effective_profile == "p0_strict@1" and not l4_rv_ok:
                     reasons.append("l4_rv_24h_missing")
+            elif single_side_confirmed_absent:
+                readiness_status = "MARKET_SINGLE_SIDE_ONLY"
+                for s in non_eligible_sides:
+                    reasons.append(f"{s}_market_candidate_absent")
             else:
                 readiness_status = "SOURCE_READY"
+
+            absent_sides: dict[str, dict[str, Any]] = {}
+            if single_side_confirmed_absent or both_sides_confirmed_absent:
+                for s in non_eligible_sides:
+                    if market_absent_by_side.get(s):
+                        s_info = sides[s]
+                        s_gaps = [str(g) for g in (s_info.get("gap_reasons") or ()) if g]
+                        absent_sides[s] = {
+                            "status": s_info.get("status"),
+                            "gap_reasons": s_gaps,
+                            "reason": "、".join(s_gaps) if s_gaps else "完整市场发现确认无合格价差候选",
+                        }
 
             return {
                 "readiness_status": readiness_status,
@@ -5076,6 +5124,7 @@ class AstraWorkbench:
                 "pair_skew_ms": pair_skew_ms,
                 "pair_skew_ok": pair_skew_ok,
                 "sides": sides,
+                "absent_sides": absent_sides,
                 "channels": {
                     "l3_expiry_gamma": {
                         "ok": l3_walls_ok,
@@ -5093,13 +5142,13 @@ class AstraWorkbench:
         refreshed = False
         if (
             allow_refresh
-            and state["readiness_status"] not in {"SOURCE_READY", "MARKET_SINGLE_SIDE_ONLY"}
+            and state["readiness_status"] not in {"SOURCE_READY", "MARKET_SINGLE_SIDE_ONLY", "MARKET_NO_ELIGIBLE_CANDIDATES"}
             and state["deribit_cooldown_remaining_ms"] == 0
         ):
             with self._prepare_deal_lock:
                 state = _evaluate(self.clock_ms())
                 if (
-                    state["readiness_status"] not in {"SOURCE_READY", "MARKET_SINGLE_SIDE_ONLY"}
+                    state["readiness_status"] not in {"SOURCE_READY", "MARKET_SINGLE_SIDE_ONLY", "MARKET_NO_ELIGIBLE_CANDIDATES"}
                     and state["deribit_cooldown_remaining_ms"] == 0
                 ):
                     if self.config.expiry_gamma_enabled:
@@ -5117,7 +5166,7 @@ class AstraWorkbench:
                         refreshed = True
                         state = _evaluate(self.clock_ms())
                     if (
-                        state["readiness_status"] not in {"SOURCE_READY", "MARKET_SINGLE_SIDE_ONLY"}
+                        state["readiness_status"] not in {"SOURCE_READY", "MARKET_SINGLE_SIDE_ONLY", "MARKET_NO_ELIGIBLE_CANDIDATES"}
                         and state["deribit_cooldown_remaining_ms"] == 0
                     ):
                         self.refresh(now_ms=self.clock_ms(), record_daily=False)
@@ -5126,31 +5175,33 @@ class AstraWorkbench:
 
         quote_hold_final = int(getattr(unsuitable, "QUOTE_HOLD_MS", 180_000))
         cases_out: dict[str, Any] | None = None
-        put_side = state["sides"]["put"]
-        call_side = state["sides"]["call"]
-        put_sid = put_side.get("snapshot_id")
-        call_sid = call_side.get("snapshot_id")
-        exp_match = (
-            put_side["expiry_matches"]
-            and call_side["expiry_matches"]
-            and (target_expiry_ms is None or (put_side["expiry_ms"] == target_expiry_ms and call_side["expiry_ms"] == target_expiry_ms))
+        is_single_side = state["readiness_status"] == "MARKET_SINGLE_SIDE_ONLY"
+        dealable_sides = [
+            s for s in ("put", "call")
+            if state["sides"][s]["formal_evidence_eligible"]
+        ]
+        expected_deal_count = 1 if is_single_side else 2
+        exp_match = bool(dealable_sides) and all(
+            state["sides"][s]["expiry_matches"]
+            and (target_expiry_ms is None or state["sides"][s]["expiry_ms"] == target_expiry_ms)
+            and isinstance(state["sides"][s].get("snapshot_id"), str)
+            for s in dealable_sides
         )
 
         if (
-            state["readiness_status"] == "SOURCE_READY"
-            and put_side["formal_evidence_eligible"]
-            and call_side["formal_evidence_eligible"]
+            state["readiness_status"] in {"SOURCE_READY", "MARKET_SINGLE_SIDE_ONLY"}
+            and len(dealable_sides) == expected_deal_count
             and exp_match
-            and isinstance(put_sid, str)
-            and isinstance(call_sid, str)
         ):
             try:
-                put_case = self.case_file(put_sid)
-                call_case = self.case_file(call_sid)
+                built_cases = {
+                    s: self.case_file(state["sides"][s]["snapshot_id"])
+                    for s in dealable_sides
+                }
                 now_final = self.clock_ms()
                 qual = evidence_qual.qualify_deal_case_pair(
-                    put_case,
-                    call_case,
+                    built_cases.get("put"),
+                    built_cases.get("call"),
                     target_expiry_ms=state["effective_expiry_ms"],
                     now_ms=now_final,
                     slot_ms=slot_ms,
@@ -5161,14 +5212,17 @@ class AstraWorkbench:
                     min_valuation_at_slot=True,
                     input_profile=effective_profile,
                     quote_hold_ms=quote_hold_final,
+                    allow_single_side=is_single_side,
                 )
                 if not qual["ok"]:
-                    put_case = self.case_file(put_sid, rebuild=True)
-                    call_case = self.case_file(call_sid, rebuild=True)
+                    built_cases = {
+                        s: self.case_file(state["sides"][s]["snapshot_id"], rebuild=True)
+                        for s in dealable_sides
+                    }
                     now_final = self.clock_ms()
                     qual = evidence_qual.qualify_deal_case_pair(
-                        put_case,
-                        call_case,
+                        built_cases.get("put"),
+                        built_cases.get("call"),
                         target_expiry_ms=state["effective_expiry_ms"],
                         now_ms=now_final,
                         slot_ms=slot_ms,
@@ -5179,9 +5233,10 @@ class AstraWorkbench:
                         min_valuation_at_slot=True,
                         input_profile=effective_profile,
                         quote_hold_ms=quote_hold_final,
+                        allow_single_side=is_single_side,
                     )
                 if qual["ok"]:
-                    cases_out = {"put": put_case, "call": call_case}
+                    cases_out = built_cases
                 else:
                     state["readiness_status"] = "L3_OR_L4_INCOMPLETE"
                     state["reasons"] = list(dict.fromkeys([
@@ -5194,9 +5249,10 @@ class AstraWorkbench:
                 state["readiness_status"] = "DISCOVERY_INCOMPLETE"
                 state["reasons"] = list(dict.fromkeys([*state["reasons"], "case_file_build_failed"]))
 
+        ready_ok = state["readiness_status"] in {"SOURCE_READY", "MARKET_SINGLE_SIDE_ONLY"} and cases_out is not None
         out: dict[str, Any] = {
             "enabled": self.config.shadow_experiment,
-            "ready_for_deal": state["readiness_status"] == "SOURCE_READY" and cases_out is not None,
+            "ready_for_deal": ready_ok,
             "readiness_status": state["readiness_status"],
             "checked_at_ms": state["checked_at_ms"],
             "view_updated_at_ms": state["view_updated_at_ms"],
@@ -5212,12 +5268,14 @@ class AstraWorkbench:
             "sides": state["sides"],
             "channels": state["channels"],
             "reasons": state["reasons"],
-            "blockers": list(state["reasons"]),
+            "blockers": [] if ready_ok else list(state["reasons"]),
             "refreshed": refreshed,
             "refresh_triggered": refreshed,
             "refresh_debounced": False,
             "execution_allowed": False,
         }
+        if state.get("absent_sides"):
+            out["absent_sides"] = state["absent_sides"]
         if cases_out is not None:
             out["cases"] = cases_out
         return out
@@ -5296,6 +5354,10 @@ class AstraWorkbench:
                     **({"detail": detail_text} if detail_text else {}),
                     "execution_allowed": False,
                 }
+
+            cooldown_ms = self._deribit_cooldown_remaining_ms(now)
+            if cooldown_ms > 0:
+                return _record_unavailable("DERIBIT_HTTP_429", f"deribit cooldown active ({cooldown_ms}ms)")
 
             # Pre-warm heavy caches BEFORE grabbing the live orderbook so total book age stays << 5000ms.
             self._ledger_state()

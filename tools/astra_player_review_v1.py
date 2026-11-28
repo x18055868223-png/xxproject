@@ -1168,6 +1168,14 @@ def is_recoverable_citation_contract_failure(contract_validation: Any) -> bool:
     return False
 
 
+def _available_sides_from_contracts(contracts: Any) -> set[str]:
+    present = {
+        side for side in ("put", "call")
+        if _resolve_contract_from_pair(contracts, side) is not None
+    }
+    return present if present else {"put", "call"}
+
+
 def validate_initial_reply_contract(
     parsed_reply: Mapping[str, Any],
     contracts: Any = None,
@@ -1182,6 +1190,13 @@ def validate_initial_reply_contract(
     plan = parsed_reply.get("condition_plan")
     action = str(decision.get("action") or "")
     side = str(decision.get("side") or "").lower()
+    available_sides = _available_sides_from_contracts(contracts)
+    if available_sides == {"put"}:
+        decision_excerpt_keys: tuple[str, ...] = ("put", "comparison", "put_counter")
+    elif available_sides == {"call"}:
+        decision_excerpt_keys = ("call", "comparison", "call_counter")
+    else:
+        decision_excerpt_keys = ("put", "call", "comparison", "put_counter", "call_counter")
     mech_ver = getattr(dossier.condition, "MECHANICAL_CONTRACT_VERSION", "p2_strict@1")
     lossless_repairs = [
         dict(r) if isinstance(r, Mapping) else {"kind": str(r)}
@@ -1194,6 +1209,8 @@ def validate_initial_reply_contract(
 
     excerpt_checks: dict[str, Any] = {}
     blocking_errors: list[str] = []
+    if action == "Accept" and side in {"put", "call"} and side not in available_sides:
+        blocking_errors.append(f"absent_side_accept_forbidden:{side}")
     section_occurrences = (
         dossier.extract_labeled_section_occurrences(raw_text)
         if raw_text and hasattr(dossier, "extract_labeled_section_occurrences")
@@ -1202,7 +1219,7 @@ def validate_initial_reply_contract(
     sections_first = {k: occs[0] for k, occs in section_occurrences.items() if occs} if section_occurrences else None
 
     if check_excerpt_completeness and raw_text:
-        for key in ("put", "call", "comparison", "put_counter", "call_counter"):
+        for key in decision_excerpt_keys:
             chk = _inspect_excerpt_compat(decision.get(key), raw_text, expected_section=key, sections=sections_first)
             excerpt_checks[key] = chk
             if chk.get("status") in {"EMPTY", "NOT_IN_TEXT"}:
@@ -1280,7 +1297,7 @@ def validate_initial_reply_contract(
 
     if check_excerpt_completeness:
         non_m_named = [
-            *((k, decision.get(k)) for k in ("put", "call", "comparison", "put_counter", "call_counter")),
+            *((k, decision.get(k)) for k in decision_excerpt_keys),
             *((f"condition_plan.{k}", plan.get(k)) for k in ("historical_facts", "accepted_conditions")),
         ]
         for idx_a in range(len(non_m_named)):
@@ -1333,8 +1350,13 @@ def validate_initial_reply_contract(
 
     contract = _resolve_contract_from_pair(contracts, side)
     if contract is None:
+        fail_status = (
+            "CONTRACT_FAILED"
+            if any(err.startswith("absent_side_accept_forbidden:") for err in blocking_errors)
+            else "UNEVALUABLE_MISSING_CONTRACT"
+        )
         return {
-            "status": "UNEVALUABLE_MISSING_CONTRACT",
+            "status": fail_status,
             "audit_scope": "ACCEPT_FULL_CONTRACT",
             "mechanical_contract_version": mech_ver,
             "recoverable_citation_only": False,
@@ -1571,7 +1593,13 @@ def parse_initial_reply(
     lossless_repairs: list[dict[str, Any]] = [{"kind": kind} for kind in format_repairs]
     section_occurrences = dossier.extract_labeled_section_occurrences(public_text) if effective_strict else {}
 
-    excerpt_keys = ("put", "call", "comparison", "put_counter", "call_counter")
+    available_sides = _available_sides_from_contracts(eff_contracts)
+    if available_sides == {"put"}:
+        excerpt_keys = ("put", "comparison", "put_counter")
+    elif available_sides == {"call"}:
+        excerpt_keys = ("call", "comparison", "call_counter")
+    else:
+        excerpt_keys = ("put", "call", "comparison", "put_counter", "call_counter")
     annotation: dict[str, Any] = {"depends_on_ard": payload.get("depends_on_ard")}
     for k in excerpt_keys:
         val_k = payload.get(k)
@@ -1624,10 +1652,12 @@ def parse_initial_reply(
         raise ValueError(message)
 
     try:
-        decision = dossier.parse(raw_bytes, annotation)
+        decision = dossier.parse(raw_bytes, annotation, available_sides=available_sides)
     except ValueError as parse_exc:
         msg = str(parse_exc)
-        if "heading" in msg or "Put/Call" in msg:
+        if "forbidden when" in msg:
+            code = "absent_side_accept_forbidden"
+        elif "heading" in msg or "Put/Call" in msg:
             code = "invalid_or_ambiguous_decision_heading"
         elif "ARD dependence" in msg:
             code = "invalid_depends_on_ard_type"

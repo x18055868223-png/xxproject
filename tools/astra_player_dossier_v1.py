@@ -174,12 +174,38 @@ def schedule(plan, at):
 
 
 def seal_source(cases, cards, index_path, history, instruments=None, *, received_at_ms=None,
-                source='local archive', band_snapshot=None):
+                source='local archive', band_snapshot=None, absent_sides=None):
     out = dict(cases=cases, cards=cards, index_path=index_path, history=history, instruments=instruments,
                received_at_ms=received_at_ms, source=source)
     if band_snapshot is not None:
         out['band_snapshot'] = band_snapshot
+    if absent_sides:
+        out['absent_sides'] = dict(absent_sides)
     return out
+
+
+def _hand_available_sides(hand):
+    src_path = Path(hand) / 'evidence' / 'source.json'
+    if src_path.is_file():
+        try:
+            src = read(src_path)
+            sides = {
+                c.get('side')
+                for c in (src.get('cards') or ())
+                if isinstance(c, dict) and c.get('side') in {'put', 'call'}
+            }
+            if not sides:
+                sides = {
+                    player.values(cs, 'L1.contract').get('side')
+                    for cs in (src.get('cases') or ())
+                    if isinstance(cs, dict)
+                }
+            sides = {s for s in sides if s in {'put', 'call'}}
+            if sides:
+                return sides
+        except Exception:
+            pass
+    return {'put', 'call'}
 
 
 def _normalize_legacy_structure_row(r):
@@ -302,20 +328,29 @@ def _normalize_fallback_cases(fallback_cases):
 
 
 def collect(archive_root, expiry, slot, *, startup=False, clock=now_ms, band_snapshot=None, candidate_round='r2',
-            fallback_cases=None, provenance_override=None, input_profile='legacy_v1'):
+            fallback_cases=None, provenance_override=None, input_profile='legacy_v1', absent_sides=None):
     """Use the existing archive's native cases. Public reads fill the current path and expiry proof."""
     archive_root = Path(archive_root)
     day = utc(expiry).date().isoformat()
     case_dir = archive_root / 'cases' / utc(slot).date().isoformat()
     fallback_by_side = _normalize_fallback_cases(fallback_cases)
+    absent_map = {
+        s: dict(absent_sides[s]) if isinstance(absent_sides[s], dict) else {'reason': str(absent_sides[s])}
+        for s in ('put', 'call')
+        if isinstance(absent_sides, dict) and s in absent_sides and absent_sides[s] is not None
+    }
+    expected_sides = [s for s in ('put', 'call') if s not in absent_map]
+    if not expected_sides:
+        raise LookupError('双侧市场发现均无合格价差候选')
+    is_single_side = len(expected_sides) == 1
     disk_matches = {
         s: list(case_dir.glob(f'{utc(slot):%H}_{s}_*.json.gz')) if case_dir.is_dir() else []
         for s in ('put', 'call')
     }
-    for s in ('put', 'call'):
+    for s in expected_sides:
         if len(disk_matches[s]) > 1:
             raise LookupError(f'需同一个采集小时的唯一 {s} 原生案卷，现有 {len(disk_matches[s])} 份')
-    for side in ('put', 'call'):
+    for side in expected_sides:
         if side not in fallback_by_side:
             continue
         fb_case = fallback_by_side[side]
@@ -326,11 +361,44 @@ def collect(archive_root, expiry, slot, *, startup=False, clock=now_ms, band_sna
         if fb_build.get('content_sha256') is not None:
             if fb_build.get('content_sha256') != evidence_qual.canonical_case_content_sha256(fb_case):
                 raise LookupError(f'{side} 回退案卷内容哈希校验失败')
-    has_full_fallback = ('put' in fallback_by_side and 'call' in fallback_by_side)
+    has_full_fallback = all(s in fallback_by_side for s in expected_sides)
     candidates = []
     candidate_is_fallback = []
     used_fallback = False
-    if len(disk_matches['put']) == 1 and len(disk_matches['call']) == 1:
+    if is_single_side:
+        only_side = expected_sides[0]
+        if len(disk_matches[only_side]) == 1:
+            disk_case = player.read_json(disk_matches[only_side][0])
+            disk_qual_ok = (
+                not has_full_fallback
+                or evidence_qual.qualify_deal_case_pair(
+                    disk_case if only_side == 'put' else None,
+                    disk_case if only_side == 'call' else None,
+                    target_expiry_ms=expiry,
+                    now_ms=clock(),
+                    slot_ms=slot,
+                    require_in_slot=not startup,
+                    require_live_fresh=False,
+                    require_content_sha256=False,
+                    require_l3=True,
+                    input_profile=input_profile or 'legacy_v1',
+                    allow_single_side=True,
+                )['ok']
+            )
+            if not disk_qual_ok and has_full_fallback:
+                candidates = [fallback_by_side[only_side]]
+                candidate_is_fallback = [True]
+                used_fallback = True
+            else:
+                candidates = [disk_case]
+                candidate_is_fallback = [False]
+        elif only_side in fallback_by_side:
+            candidates = [fallback_by_side[only_side]]
+            candidate_is_fallback = [True]
+            used_fallback = True
+        else:
+            raise LookupError(f'需同一个采集小时的唯一 {only_side} 原生案卷，现有 0 份')
+    elif len(disk_matches['put']) == 1 and len(disk_matches['call']) == 1:
         disk_put = player.read_json(disk_matches['put'][0])
         disk_call = player.read_json(disk_matches['call'][0])
         disk_pair_ok = (
@@ -391,7 +459,7 @@ def collect(archive_root, expiry, slot, *, startup=False, clock=now_ms, band_sna
             candidate_is_fallback = [True, True]
             used_fallback = True
     else:
-        for side in ('put', 'call'):
+        for side in expected_sides:
             if len(disk_matches[side]) == 1:
                 candidates.append(player.read_json(disk_matches[side][0]))
                 candidate_is_fallback.append(False)
@@ -405,7 +473,7 @@ def collect(archive_root, expiry, slot, *, startup=False, clock=now_ms, band_sna
     if any(type(t) is not int for t in reads):
         raise LookupError('案卷构建时间无效')
     contracts = [player.values(case, 'L1.contract') for case in candidates]
-    if [c.get('side') for c in contracts] != ['put', 'call']:
+    if [c.get('side') for c in contracts] != expected_sides:
         raise LookupError('案卷方向与目标槽位不符')
     if any(c['expiry_ms'] != expiry for c in contracts):
         raise LookupError('当前引擎候选到期与目标不符')
@@ -415,11 +483,11 @@ def collect(archive_root, expiry, slot, *, startup=False, clock=now_ms, band_sna
             raise LookupError('当前小时案卷距启动过久，等下一次原生采集')
     elif any(not (slot <= t <= at_check) for t in reads):
         raise LookupError('当前小时案卷构建时间超出采集槽位窗口')
-    if abs(reads[0] - reads[1]) > 60_000:
+    if len(reads) == 2 and abs(reads[0] - reads[1]) > 60_000:
         raise LookupError('双侧案卷构建时间差超过 60 秒')
     val_reads = []
-    for side_idx, (case, built_ms, is_fb) in enumerate(zip(candidates, reads, candidate_is_fallback)):
-        s_name = 'put' if side_idx == 0 else 'call'
+    for case, contract, built_ms, is_fb in zip(candidates, contracts, reads, candidate_is_fallback):
+        s_name = contract.get('side')
         quote = player.values(case, 'L2.quote')
         if not isinstance(quote, dict):
             raise LookupError(f'{s_name} 案卷缺少 L2.quote 报价')
@@ -438,14 +506,14 @@ def collect(archive_root, expiry, slot, *, startup=False, clock=now_ms, band_sna
         if is_fb and (at_check - v_ts) > 180_000:
             raise LookupError(f'{s_name} 回退案卷报价已超过 180 秒保鲜期')
         val_reads.append(v_ts)
-    if abs(val_reads[0] - val_reads[1]) > 60_000:
+    if len(val_reads) == 2 and abs(val_reads[0] - val_reads[1]) > 60_000:
         raise LookupError('双侧案卷报价估值时间差超过 60 秒')
     instruments = public('get_instruments', currency='BTC', kind='option', expired='false')
     wanted = {c[f'{leg}_instrument'] for c in contracts for leg in ('short', 'long')}
     instrument_proof = [r for r in instruments if r.get('instrument_name') in wanted]
     if {r['instrument_name'] for r in instrument_proof if r.get('expiration_timestamp') == expiry
             and r.get('settlement_currency') == 'BTC' and r.get('is_active')} != wanted:
-        raise LookupError('Deribit 未核实四条原生腿和目标到期')
+        raise LookupError('Deribit 未核实四条原生腿和目标到期' if len(expected_sides) == 2 else 'Deribit 未核实可用侧两条原生腿和目标到期')
     points = archive.Deribit().index_path()
     received = clock()
     history = [_normalize_legacy_structure_row(r) for r in rows(archive_root / 'structure' / f'{day}.jsonl')
@@ -495,7 +563,7 @@ def collect(archive_root, expiry, slot, *, startup=False, clock=now_ms, band_sna
         else 'native research archive + Deribit public read'
     )
     return seal_source(candidates, cards, path, history, instrument_proof, received_at_ms=received,
-                       source=source_label, band_snapshot=resolved_band)
+                       source=source_label, band_snapshot=resolved_band, absent_sides=absent_map or None)
 
 
 class Dossiers:
@@ -606,13 +674,51 @@ class Dossiers:
                       for leg in ('short_instrument', 'long_instrument')}
             if not wanted <= proof:
                 raise ValueError('missing native leg/expiry proof')
-        if effective_profile != legacy_profile:
-            text = player.build_input(*source['cases'], *source['cards'], index_path=source['index_path'],
-                                      ard_history=source['history'], ard_band_snapshot=source.get('band_snapshot'),
-                                      input_profile=effective_profile)
+        cases_by_side = {}
+        for cs in source['cases']:
+            c_side = player.values(cs, 'L1.contract').get('side')
+            if c_side not in {'put', 'call'} or c_side in cases_by_side:
+                raise ValueError('source cases contain invalid or duplicate side')
+            cases_by_side[c_side] = cs
+        cards_by_side = {}
+        for cd in source['cards']:
+            cd_side = cd.get('side')
+            if cd_side not in {'put', 'call'} or cd_side in cards_by_side:
+                raise ValueError('source cards contain invalid or duplicate side')
+            cards_by_side[cd_side] = cd
+        if set(cases_by_side) != set(cards_by_side) or not cases_by_side:
+            raise ValueError('source cases and cards sides mismatch')
+        if len(cases_by_side) == 1:
+            absent_raw = source.get('absent_sides')
+            expected_absent = {'put', 'call'} - set(cases_by_side)
+            if not isinstance(absent_raw, dict) or set(absent_raw) != expected_absent:
+                raise ValueError('single-side source requires absent_sides matching missing side')
+        absent_kw = {'absent_sides': source['absent_sides']} if source.get('absent_sides') else {}
+        if effective_profile != legacy_profile or absent_kw:
+            build_kw = {}
+            if effective_profile != legacy_profile:
+                build_kw['input_profile'] = effective_profile
+            build_kw.update(absent_kw)
+            text = player.build_input(
+                cases_by_side.get('put'),
+                cases_by_side.get('call'),
+                cards_by_side.get('put'),
+                cards_by_side.get('call'),
+                index_path=source['index_path'],
+                ard_history=source['history'],
+                ard_band_snapshot=source.get('band_snapshot'),
+                **build_kw,
+            )
         else:
-            text = player.build_input(*source['cases'], *source['cards'], index_path=source['index_path'],
-                                      ard_history=source['history'], ard_band_snapshot=source.get('band_snapshot'))
+            text = player.build_input(
+                cases_by_side.get('put'),
+                cases_by_side.get('call'),
+                cards_by_side.get('put'),
+                cards_by_side.get('call'),
+                index_path=source['index_path'],
+                ard_history=source['history'],
+                ard_band_snapshot=source.get('band_snapshot'),
+            )
         raw, inputs = text.replace('\n', os.linesep).encode('utf-8'), encode(source)
         files = [Path(module.__file__) for module in (player, player.ard, condition, levels)]
         code = {p.name: sha(p.read_bytes()) for p in files}
@@ -706,8 +812,9 @@ class Dossiers:
         if not reason or sha(raw) != original['raw_sha256']:
             raise ValueError('reparse needs original bytes and a reason')
         judgment, error = None, None
+        hand_sides = _hand_available_sides(hand)
         try:
-            judgment = parse(raw, annotation)
+            judgment = parse(raw, annotation, available_sides=hand_sides)
         except (ValueError, UnicodeError, TypeError) as exc:
             error = str(exc)
         data = dict(prior_attempt=attempt, parser=PARSER, raw_sha256=original['raw_sha256'], reason=reason,
@@ -777,9 +884,10 @@ class Dossiers:
             raise ValueError('invalid response clocks')
         siblings = [read(p) for p in attempts(hand)]
         judgment, record_error = None, None
+        hand_sides = _hand_available_sides(hand)
         if status == 'RECEIVED' and raw is not None:
             try:
-                judgment = parse(raw, annotation)
+                judgment = parse(raw, annotation, available_sides=hand_sides)
             except (UnicodeError, ValueError, TypeError) as exc:
                 status, record_error = 'PARSE_FAILED', str(exc)
             else:
@@ -1157,8 +1265,16 @@ class Dossiers:
                                   remaining_ms=expiry - start, path=summary, delivery_payout_btc=payout,
                                   quote=player.entry(case, 'L2.quote'), economics_estimate=player.entry(case, 'L1.economics'),
                                   executable_net_return_btc=None)
-            put, call = (pair[x]['delivery_payout_btc'] for x in ('put', 'call'))
-            better = None if put is None else ('tie' if put == call else 'put' if put < call else 'call')
+            put = pair['put']['delivery_payout_btc'] if 'put' in pair else None
+            call = pair['call']['delivery_payout_btc'] if 'call' in pair else None
+            if put is not None and call is not None:
+                better = 'tie' if put == call else 'put' if put < call else 'call'
+            elif put is not None:
+                better = 'put'
+            elif call is not None:
+                better = 'call'
+            else:
+                better = None
             chosen = decision['judgment']['side'] if decision else None
             decided_at_ms = decision.get('recorded_at_ms') if isinstance(decision, dict) else None
             t0_credit, shadow_net, managed_shadow = None, None, None
@@ -1190,7 +1306,7 @@ class Dossiers:
                 raw_credit = ((link_rec.get('t0') or {}).get('economy') or {}).get('net_credit_after_entry_fee_btc')
                 if player.number(raw_credit) is not None:
                     t0_credit = raw_credit
-                    if pair[chosen]['delivery_payout_btc'] is not None:
+                    if chosen in pair and pair[chosen]['delivery_payout_btc'] is not None:
                         shadow_net = round(t0_credit - pair[chosen]['delivery_payout_btc'], 8)
                 ep_id = (link_rec.get('origin') or {}).get('dossier_episode_id')
                 ep_dir = (folder / 'episodes' / key(ep_id)) if ep_id else None
@@ -1917,8 +2033,18 @@ def build_annotation_from_sections(text, *, action, depends_on_ard, invalidation
     return out
 
 
-def parse(raw, annotation):
+def _normalize_available_sides(available_sides):
+    if available_sides is None:
+        return {'put', 'call'}
+    sides = {str(s).strip().lower() for s in available_sides if str(s).strip().lower() in {'put', 'call'}}
+    if not sides:
+        raise ValueError('available_sides must include put and/or call')
+    return sides
+
+
+def parse(raw, annotation, *, available_sides=None):
     text = raw.decode('utf-8')
+    allowed_sides = _normalize_available_sides(available_sides)
     headings, fallback = [], []
     for line in text.splitlines():
         body = line.strip().lstrip('#* ').rstrip('* ').strip()
@@ -1932,9 +2058,16 @@ def parse(raw, annotation):
     action, side = approved[0]
     if (action == 'Accept') != bool(side):
         raise ValueError('only Accept needs an explicit Put/Call')
+    if action == 'Accept' and side not in allowed_sides:
+        raise ValueError(f'Accept/{side.title()} forbidden when {side} side is absent')
     if not isinstance(annotation, dict):
         raise ValueError('provide verbatim public excerpts for both sides and comparison')
-    keys = ('put', 'call', 'comparison', 'put_counter', 'call_counter')
+    if allowed_sides == {'put', 'call'}:
+        keys = ('put', 'call', 'comparison', 'put_counter', 'call_counter')
+    elif allowed_sides == {'put'}:
+        keys = ('put', 'comparison', 'put_counter')
+    else:
+        keys = ('call', 'comparison', 'call_counter')
     if any(not excerpt_in_text(annotation.get(k), text) for k in keys):
         raise ValueError('both sides, strongest counterevidence and comparison must point to verbatim excerpts')
     if type(annotation.get('depends_on_ard', False)) is not bool:

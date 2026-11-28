@@ -800,9 +800,22 @@ def qualify_deal_case_pair(
     quote_hold_ms: int = DEFAULT_DEAL_QUOTE_HOLD_MS,
     max_pair_skew_ms: int = DEFAULT_DEAL_PAIR_SKEW_MS,
     max_l3_age_ms: int = DEFAULT_DEAL_L3_MAX_AGE_MS,
+    allow_single_side: bool = False,
 ) -> dict[str, Any]:
-    """Single-source qualification of a target-expiry Put/Call native case pair."""
-    if not isinstance(put_case, Mapping) or not isinstance(call_case, Mapping):
+    """Single-source qualification of target-expiry Put/Call native case(s)."""
+    present_cases = [
+        (side, case)
+        for side, case in (("put", put_case), ("call", call_case))
+        if isinstance(case, Mapping)
+    ]
+    if allow_single_side:
+        if not present_cases:
+            return {
+                "ok": False,
+                "reason_codes": ["missing_case_pair"],
+                "error": "cases_by_side must contain at least one 'put' or 'call' case mapping",
+            }
+    elif len(present_cases) != 2:
         return {
             "ok": False,
             "reason_codes": ["missing_case_pair"],
@@ -824,7 +837,7 @@ def qualify_deal_case_pair(
         else None
     )
 
-    for side, case in (("put", put_case), ("call", call_case)):
+    for side, case in present_cases:
         case_id = case.get("case_id")
         if not isinstance(case_id, str) or not _CASE_ID_RE.match(case_id):
             return {"ok": False, "reason_codes": [f"{side}_invalid_case_id"], "error": f"invalid {side} case_id"}
@@ -942,17 +955,20 @@ def qualify_deal_case_pair(
         val_ts_by_side[side] = q_val_ts
         contracts_by_side[side] = contract
 
-    if contracts_by_side["put"]["expiry_ms"] != contracts_by_side["call"]["expiry_ms"]:
-        return {"ok": False, "reason_codes": ["pair_expiry_mismatch"], "error": "pair L1.contract expiry_ms mismatch"}
-    if abs(built_by_side["put"] - built_by_side["call"]) > max_pair_skew_ms:
-        return {"ok": False, "reason_codes": ["pair_built_skew_exceeded"], "error": "pair built_at_ms skew exceeds 60s"}
-    if abs(val_ts_by_side["put"] - val_ts_by_side["call"]) > max_pair_skew_ms:
-        return {"ok": False, "reason_codes": ["pair_valuation_skew_exceeded"], "error": "pair valuation_ts_ms skew exceeds 60s"}
+    if "put" in contracts_by_side and "call" in contracts_by_side:
+        if contracts_by_side["put"]["expiry_ms"] != contracts_by_side["call"]["expiry_ms"]:
+            return {"ok": False, "reason_codes": ["pair_expiry_mismatch"], "error": "pair L1.contract expiry_ms mismatch"}
+        if abs(built_by_side["put"] - built_by_side["call"]) > max_pair_skew_ms:
+            return {"ok": False, "reason_codes": ["pair_built_skew_exceeded"], "error": "pair built_at_ms skew exceeds 60s"}
+        if abs(val_ts_by_side["put"] - val_ts_by_side["call"]) > max_pair_skew_ms:
+            return {"ok": False, "reason_codes": ["pair_valuation_skew_exceeded"], "error": "pair valuation_ts_ms skew exceeds 60s"}
 
     return {
         "ok": True,
         "reason_codes": [],
         "error": None,
+        "available_sides": [side for side, _ in present_cases],
+        "absent_sides": [side for side in ("put", "call") if side not in built_by_side],
         "built_by_side": built_by_side,
         "valuation_ts_by_side": val_ts_by_side,
         "contracts_by_side": contracts_by_side,

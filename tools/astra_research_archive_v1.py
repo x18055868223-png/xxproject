@@ -1789,23 +1789,29 @@ def backfill_slot_cases(
     lock_timeout_s: float = 2.0,
     lock_poll_s: float = 0.1,
     input_profile: str = "legacy_v1",
+    allow_single_side: bool = False,
 ) -> dict[str, Any]:
-    """Idempotently persist a verified Put/Call case pair for a scheduled UTC hour slot."""
+    """Idempotently persist verified Put/Call (or confirmed single-side) native case(s) for a UTC hour slot."""
     if not _is_strict_int(slot_ms) or not _is_strict_int(target_expiry_ms):
         raise ValueError("slot_ms and target_expiry_ms must be integers")
     if now_ms is not None and not _is_strict_int(now_ms):
         raise ValueError("now_ms must be an integer when provided")
     eff_now = int(time.time() * 1000) if now_ms is None else now_ms
-    if not isinstance(cases_by_side, Mapping) or not all(
-        isinstance(cases_by_side.get(s), Mapping) for s in ("put", "call")
-    ):
+    provided_sides = (
+        [s for s in ("put", "call") if isinstance(cases_by_side.get(s), Mapping)]
+        if isinstance(cases_by_side, Mapping)
+        else []
+    )
+    if allow_single_side:
+        if not provided_sides:
+            raise ValueError("cases_by_side must contain at least one 'put' or 'call' case mapping")
+    elif len(provided_sides) != 2:
         raise ValueError("cases_by_side must contain both 'put' and 'call' case mappings")
 
-    put_copy = dict(cases_by_side["put"])
-    call_copy = dict(cases_by_side["call"])
+    copied_cases = {s: dict(cases_by_side[s]) for s in provided_sides}
     qual = evidence_qual.qualify_deal_case_pair(
-        put_copy,
-        call_copy,
+        copied_cases.get("put"),
+        copied_cases.get("call"),
         target_expiry_ms=target_expiry_ms,
         now_ms=eff_now,
         slot_ms=slot_ms,
@@ -1814,10 +1820,11 @@ def backfill_slot_cases(
         require_content_sha256=True,
         require_l3=True,
         input_profile=input_profile or "legacy_v1",
+        allow_single_side=allow_single_side,
     )
     if not qual["ok"]:
         raise ValueError(qual["error"])
-    validated = {"put": put_copy, "call": call_copy}
+    validated = copied_cases
     built_by_side = qual["built_by_side"]
     val_ts_by_side = qual["valuation_ts_by_side"]
     contracts_by_side = qual["contracts_by_side"]
@@ -1834,14 +1841,14 @@ def backfill_slot_cases(
                 "ok": True,
                 "persisted": False,
                 "lock_busy": True,
-                "cases": [dict(validated["put"]), dict(validated["call"])],
+                "cases": [dict(validated[s]) for s in provided_sides],
             }
         archive = Archive(root)
         state = archive.load_state()
         state.setdefault("cases", {})
         case_dir = root / "cases" / day
-        existing_by_side: dict[str, tuple[dict[str, Any], str, Mapping[str, Any], int] | None] = {}
-        for side in ("put", "call"):
+        existing_by_side: dict[str, tuple[dict[str, Any], str, Mapping[str, Any], int, int] | None] = {}
+        for side in provided_sides:
             matches = sorted(case_dir.glob(f"{hh}_{side}_*.json.gz")) if case_dir.is_dir() else []
             if len(matches) > 1:
                 raise ValueError(f"multiple existing {side} cases on disk for {day}T{hh}")
@@ -1875,19 +1882,20 @@ def backfill_slot_cases(
             else:
                 existing_by_side[side] = None
 
-        final_put_built = existing_by_side["put"][3] if existing_by_side["put"] else built_by_side["put"]
-        final_call_built = existing_by_side["call"][3] if existing_by_side["call"] else built_by_side["call"]
-        if abs(final_put_built - final_call_built) > 60_000:
-            raise ValueError("final pair built_at_ms skew with existing disk case exceeds 60s")
-        final_put_val = existing_by_side["put"][4] if existing_by_side["put"] else val_ts_by_side["put"]
-        final_call_val = existing_by_side["call"][4] if existing_by_side["call"] else val_ts_by_side["call"]
-        if abs(final_put_val - final_call_val) > 60_000:
-            raise ValueError("final pair valuation_ts_ms skew with existing disk case exceeds 60s")
+        if len(provided_sides) == 2:
+            final_put_built = existing_by_side["put"][3] if existing_by_side["put"] else built_by_side["put"]
+            final_call_built = existing_by_side["call"][3] if existing_by_side["call"] else built_by_side["call"]
+            if abs(final_put_built - final_call_built) > 60_000:
+                raise ValueError("final pair built_at_ms skew with existing disk case exceeds 60s")
+            final_put_val = existing_by_side["put"][4] if existing_by_side["put"] else val_ts_by_side["put"]
+            final_call_val = existing_by_side["call"][4] if existing_by_side["call"] else val_ts_by_side["call"]
+            if abs(final_put_val - final_call_val) > 60_000:
+                raise ValueError("final pair valuation_ts_ms skew with existing disk case exceeds 60s")
 
         wrote_sides: list[str] = []
         final_cases: dict[str, dict[str, Any]] = {}
         state_dirty = False
-        for side in ("put", "call"):
+        for side in provided_sides:
             slot_key = f"{day}T{hh}|{side}"
             existing_entry = existing_by_side[side]
             if existing_entry is not None:
@@ -1931,7 +1939,7 @@ def backfill_slot_cases(
             "persisted": True,
             "lock_busy": False,
             "wrote_sides": wrote_sides,
-            "cases": [final_cases["put"], final_cases["call"]],
+            "cases": [final_cases[s] for s in provided_sides],
         }
 
 

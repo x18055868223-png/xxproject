@@ -121,7 +121,7 @@ def selected(hand):
     if (not first or first['hand_id'] != hand.name or first['raw_sha256'] != dossier.sha(raw)
             or saved != {**{k: first[k] for k in DECISION_FIELDS},
                          'response': f'responses/{attempt_id}/response.raw'}
-            or dossier.parse(raw, first['annotation']) != saved['judgment']):
+            or dossier.parse(raw, first['annotation'], available_sides=dossier._hand_available_sides(hand)) != saved['judgment']):
         raise Blocked('reply_identity_mismatch')
     return saved, first, raw
 
@@ -4047,91 +4047,120 @@ def _auto_deal(d, plan, archive_root, service, *, llm_config=None):
                                     'readiness_status': 'PREPARE_DEAL_ERROR',
                                     'blockers': [getattr(prep_exc, 'code', None) or str(prep_exc)],
                                 }
+                            dealt_absent_sides = None
                             if (
                                 isinstance(prep_diag, dict)
                                 and prep_diag.get('ready_for_deal') is True
-                                and prep_diag.get('readiness_status') == 'SOURCE_READY'
+                                and prep_diag.get('readiness_status') in {'SOURCE_READY', 'MARKET_SINGLE_SIDE_ONLY'}
                                 and isinstance(prep_diag.get('cases'), dict)
-                                and isinstance(prep_diag['cases'].get('put'), dict)
-                                and isinstance(prep_diag['cases'].get('call'), dict)
                             ):
-                                dealt_cases = prep_diag['cases']
-                                qual = evidence_qual.qualify_deal_case_pair(
-                                    dealt_cases.get('put'),
-                                    dealt_cases.get('call'),
-                                    target_expiry_ms=expiry,
-                                    now_ms=d.clock(),
-                                    slot_ms=slot,
-                                    require_in_slot=True,
-                                    require_live_fresh=True,
-                                    require_content_sha256=True,
-                                    require_l3=True,
-                                    input_profile=input_profile,
-                                )
-                                if not qual['ok']:
-                                    dealt_cases = None
-                                    backfill_persisted = {
-                                        'persisted': False,
-                                        'validation_failed': True,
-                                        'error': qual['error'],
-                                    }
-                                    collect_exc = LookupError(f"补建原生案卷校验失败: {qual['error']}")
-                                else:
-                                    verified_pair = [dict(dealt_cases['put']), dict(dealt_cases['call'])]
-                                    backfill_fn = getattr(dossier.archive, 'backfill_slot_cases', None)
-                                    if callable(backfill_fn):
-                                        try:
-                                            bf_res = _call_with_supported_kwargs(
-                                                backfill_fn,
-                                                archive_root,
-                                                dealt_cases,
-                                                slot_ms=slot,
-                                                target_expiry_ms=expiry,
-                                                now_ms=d.clock(),
-                                                input_profile=input_profile,
-                                            )
-                                            if isinstance(bf_res, dict):
-                                                bf_cases = bf_res.get('cases')
-                                                if isinstance(bf_cases, (dict, list)):
-                                                    bf_by_side = dossier._normalize_fallback_cases(bf_cases)
-                                                    if evidence_qual.qualify_deal_case_pair(
-                                                        bf_by_side.get('put'),
-                                                        bf_by_side.get('call'),
-                                                        target_expiry_ms=expiry,
-                                                        now_ms=d.clock(),
-                                                        slot_ms=slot,
-                                                        require_in_slot=True,
-                                                        require_live_fresh=False,
-                                                        require_content_sha256=False,
-                                                        require_l3=True,
-                                                        input_profile=input_profile,
-                                                    )['ok']:
-                                                        dealt_cases = bf_cases
-                                                    else:
-                                                        dealt_cases = verified_pair
-                                                backfill_persisted = {k: v for k, v in bf_res.items() if k != 'cases'}
-                                            else:
-                                                backfill_persisted = (
-                                                    bf_res if isinstance(bf_res, (bool, list, str, int)) else True
+                                is_single_side = prep_diag.get('readiness_status') == 'MARKET_SINGLE_SIDE_ONLY'
+                                cand_cases = prep_diag['cases']
+                                cand_sides = [s for s in ('put', 'call') if isinstance(cand_cases.get(s), dict)]
+                                if (len(cand_sides) == 1 if is_single_side else len(cand_sides) == 2):
+                                    dealt_cases = {s: cand_cases[s] for s in cand_sides}
+                                    if is_single_side:
+                                        missing_s = 'call' if cand_sides[0] == 'put' else 'put'
+                                        abs_map = prep_diag.get('absent_sides') if isinstance(prep_diag.get('absent_sides'), dict) else {}
+                                        abs_entry = abs_map.get(missing_s) if isinstance(abs_map.get(missing_s), dict) else {}
+                                        if not abs_entry:
+                                            s_meta = (prep_diag.get('sides') or {}).get(missing_s) if isinstance(prep_diag.get('sides'), dict) else {}
+                                            s_gaps = [str(g) for g in ((s_meta or {}).get('gap_reasons') or ()) if g]
+                                            abs_entry = {
+                                                'status': (s_meta or {}).get('status'),
+                                                'gap_reasons': s_gaps,
+                                                'reason': '、'.join(s_gaps) if s_gaps else '完整市场发现确认无合格价差候选',
+                                            }
+                                        dealt_absent_sides = {missing_s: abs_entry}
+                                    qual = evidence_qual.qualify_deal_case_pair(
+                                        dealt_cases.get('put'),
+                                        dealt_cases.get('call'),
+                                        target_expiry_ms=expiry,
+                                        now_ms=d.clock(),
+                                        slot_ms=slot,
+                                        require_in_slot=True,
+                                        require_live_fresh=True,
+                                        require_content_sha256=True,
+                                        require_l3=True,
+                                        input_profile=input_profile,
+                                        allow_single_side=is_single_side,
+                                    )
+                                    if not qual['ok']:
+                                        dealt_cases = None
+                                        backfill_persisted = {
+                                            'persisted': False,
+                                            'validation_failed': True,
+                                            'error': qual['error'],
+                                        }
+                                        collect_exc = LookupError(f"补建原生案卷校验失败: {qual['error']}")
+                                    else:
+                                        verified_pair = [dict(dealt_cases[s]) for s in cand_sides]
+                                        backfill_fn = getattr(dossier.archive, 'backfill_slot_cases', None)
+                                        if callable(backfill_fn):
+                                            try:
+                                                bf_res = _call_with_supported_kwargs(
+                                                    backfill_fn,
+                                                    archive_root,
+                                                    dealt_cases,
+                                                    slot_ms=slot,
+                                                    target_expiry_ms=expiry,
+                                                    now_ms=d.clock(),
+                                                    input_profile=input_profile,
+                                                    allow_single_side=is_single_side,
                                                 )
-                                        except (ValueError, KeyError, TypeError) as bf_val_exc:
-                                            if 'existing' in str(bf_val_exc).lower():
-                                                dealt_cases = verified_pair
-                                                backfill_persisted = {
-                                                    'persisted': False,
-                                                    'disk_conflict': True,
-                                                    'error': str(bf_val_exc),
-                                                }
-                                            else:
-                                                dealt_cases = None
-                                                backfill_persisted = {
-                                                    'persisted': False,
-                                                    'validation_failed': True,
-                                                    'error': str(bf_val_exc),
-                                                }
-                                                collect_exc = LookupError(f'补建原生案卷校验失败: {bf_val_exc}')
-                                        except OSError as bf_os_exc:
-                                            backfill_persisted = {'persisted': False, 'error': str(bf_os_exc)}
+                                                if isinstance(bf_res, dict):
+                                                    bf_cases = bf_res.get('cases')
+                                                    if isinstance(bf_cases, (dict, list)):
+                                                        bf_by_side = dossier._normalize_fallback_cases(bf_cases)
+                                                        if evidence_qual.qualify_deal_case_pair(
+                                                            bf_by_side.get('put'),
+                                                            bf_by_side.get('call'),
+                                                            target_expiry_ms=expiry,
+                                                            now_ms=d.clock(),
+                                                            slot_ms=slot,
+                                                            require_in_slot=True,
+                                                            require_live_fresh=False,
+                                                            require_content_sha256=False,
+                                                            require_l3=True,
+                                                            input_profile=input_profile,
+                                                            allow_single_side=is_single_side,
+                                                        )['ok']:
+                                                            dealt_cases = bf_cases
+                                                        else:
+                                                            dealt_cases = verified_pair
+                                                    backfill_persisted = {k: v for k, v in bf_res.items() if k != 'cases'}
+                                                else:
+                                                    backfill_persisted = (
+                                                        bf_res if isinstance(bf_res, (bool, list, str, int)) else True
+                                                    )
+                                            except (ValueError, KeyError, TypeError) as bf_val_exc:
+                                                if 'existing' in str(bf_val_exc).lower():
+                                                    dealt_cases = verified_pair
+                                                    backfill_persisted = {
+                                                        'persisted': False,
+                                                        'disk_conflict': True,
+                                                        'error': str(bf_val_exc),
+                                                    }
+                                                else:
+                                                    dealt_cases = None
+                                                    backfill_persisted = {
+                                                        'persisted': False,
+                                                        'validation_failed': True,
+                                                        'error': str(bf_val_exc),
+                                                    }
+                                                    collect_exc = LookupError(f'补建原生案卷校验失败: {bf_val_exc}')
+                                            except OSError as bf_os_exc:
+                                                backfill_persisted = {'persisted': False, 'error': str(bf_os_exc)}
+                            elif (
+                                isinstance(prep_diag, dict)
+                                and prep_diag.get('readiness_status') == 'MARKET_NO_ELIGIBLE_CANDIDATES'
+                            ):
+                                abs_map = prep_diag.get('absent_sides') if isinstance(prep_diag.get('absent_sides'), dict) else {}
+                                detail_parts = [
+                                    f"{s.title()}({(abs_map.get(s) or {}).get('reason') or '无合格价差'})"
+                                    for s in ('put', 'call')
+                                ]
+                                collect_exc = LookupError(f"双侧市场发现均无合格价差候选: {'；'.join(detail_parts)}")
                         if dealt_cases is None:
                             raise collect_exc
                         source = _call_with_supported_kwargs(
@@ -4144,6 +4173,7 @@ def _auto_deal(d, plan, archive_root, service, *, llm_config=None):
                             fallback_cases=dealt_cases,
                             provenance_override='targeted workbench verified native case + Deribit public read',
                             input_profile=input_profile,
+                            absent_sides=dealt_absent_sides,
                         )
                         with _short_writer(d):
                             _call_with_supported_kwargs(d.deal, hand, source, input_profile=input_profile)
@@ -6243,6 +6273,7 @@ def _check_workbench_view_readiness(
         else:
             dp = item_disc.get('delta_population')
             dp_complete = isinstance(dp, dict) and dp.get('complete') is True
+            dp_total = dp.get('total_qualified') if isinstance(dp, dict) else None
             ve = dp.get('verified_eligible') if isinstance(dp, dict) else None
             side_info['side_complete'] = item_disc.get('side_complete') is True
             side_info['capture_state'] = item_disc.get('capture_state')
@@ -6250,7 +6281,17 @@ def _check_workbench_view_readiness(
             side_info['delta_population_complete'] = dp_complete
             if type(ve) is int:
                 side_info['verified_eligible'] = ve
-            no_eligible_strike = bool(dp_complete and type(ve) is int and ve == 0 and st != 'error')
+            structural_no_spread = bool(
+                isinstance(dp, dict)
+                and type(dp_total) is int
+                and dp_total == 0
+                and not dp.get('unacquired')
+                and not dp.get('delta_missing_or_invalid')
+                and item_disc.get('upstream_code') is None
+                and st == 'gap'
+            )
+            no_eligible_strike = bool(((dp_complete and type(ve) is int and ve == 0) or structural_no_spread) and st != 'error')
+            side_info['structural_no_spread'] = structural_no_spread
             side_info['market_no_eligible_strike'] = no_eligible_strike
             if no_eligible_strike:
                 reasons.append(f'candidate_{side}_no_verified_eligible_strike')
@@ -6340,11 +6381,22 @@ def _check_source_bundle_readiness(
 ):
     checks['source_checked'] = True
     p0_profile = getattr(dossier.player, 'INPUT_PROFILE_P0_STRICT', 'p0_strict@1')
+    raw_absent = source.get('absent_sides')
+    absent_sides_map = (
+        {s: raw_absent[s] for s in ('put', 'call') if s in raw_absent and isinstance(raw_absent[s], dict)}
+        if isinstance(raw_absent, dict)
+        else {}
+    )
+    expected_src_sides = {'put', 'call'} - set(absent_sides_map)
+    if len(expected_src_sides) not in {1, 2}:
+        expected_src_sides = {'put', 'call'}
+        reasons.append('source_absent_sides_invalid')
+    expected_leg_count = 2 * len(expected_src_sides)
     cards = source.get('cards')
     card_expiries = set()
     card_reads = {}
     card_sides = []
-    if not isinstance(cards, list) or len(cards) != 2 or any(not isinstance(c, dict) for c in cards):
+    if not isinstance(cards, list) or len(cards) != len(expected_src_sides) or any(not isinstance(c, dict) for c in cards):
         reasons.append('source_cards_invalid')
     if isinstance(cards, list):
         for idx, card in enumerate(cards):
@@ -6376,7 +6428,7 @@ def _check_source_bundle_readiness(
             ckey = card.get('contract_key')
             if not isinstance(ckey, str) or not ckey.strip():
                 reasons.append(f'source_card_{label}_missing_contract_key')
-        if len(card_sides) != 2 or set(card_sides) != {'put', 'call'}:
+        if len(card_sides) != len(expected_src_sides) or set(card_sides) != expected_src_sides:
             reasons.append('source_cards_sides_mismatch')
     if len(card_expiries) > 1:
         reasons.append('source_cards_expiry_mismatch')
@@ -6407,7 +6459,7 @@ def _check_source_bundle_readiness(
     case_sides = []
     wanted_instruments = set()
     has_valid_rv24 = False
-    if not isinstance(cases, list) or len(cases) != 2 or any(not isinstance(cs, dict) for cs in cases):
+    if not isinstance(cases, list) or len(cases) != len(expected_src_sides) or any(not isinstance(cs, dict) for cs in cases):
         reasons.append('source_cases_invalid')
     if isinstance(cases, list):
         case_expiries = set()
@@ -6506,7 +6558,7 @@ def _check_source_bundle_readiness(
                     has_valid_rv24 = True
         if input_profile == p0_profile and not has_valid_rv24:
             reasons.append('source_l4_rv_24h_missing')
-        if len(case_sides) != 2 or set(case_sides) != {'put', 'call'}:
+        if len(case_sides) != len(expected_src_sides) or set(case_sides) != expected_src_sides:
             reasons.append('source_cases_sides_mismatch')
         if len(case_expiries) > 1:
             reasons.append('source_cases_expiry_mismatch')
@@ -6528,7 +6580,7 @@ def _check_source_bundle_readiness(
             and isinstance(r.get('instrument_name'), str)
             and r.get('instrument_name')
         }
-        if len(wanted_instruments) != 4 or not (wanted_instruments <= proven):
+        if len(wanted_instruments) != expected_leg_count or not (wanted_instruments <= proven):
             reasons.append('source_instruments_incomplete_or_inactive')
     checks['source_instruments_proven'] = len(wanted_instruments & proven) if wanted_instruments else 0
 
@@ -6694,14 +6746,22 @@ def evaluate_source_readiness(
         _check_source_workbench_consistency(source, workbench_view, reasons)
 
     deduped = list(dict.fromkeys(reasons))
+    source_absent_keys = (
+        {s for s in ('put', 'call') if isinstance(source.get('absent_sides'), dict) and isinstance(source['absent_sides'].get(s), dict)}
+        if has_source
+        else set()
+    )
+    by_side = checks.get('candidates_by_side') if isinstance(checks.get('candidates_by_side'), dict) else {}
+    empty_sides = [
+        s for s in ('put', 'call')
+        if isinstance(by_side.get(s), dict) and by_side[s].get('market_no_eligible_strike') is True
+    ]
     if not deduped:
-        status = 'SOURCE_READY'
+        if len(source_absent_keys) == 1:
+            status = 'MARKET_SINGLE_SIDE_ONLY'
+        else:
+            status = 'SOURCE_READY'
     else:
-        by_side = checks.get('candidates_by_side') if isinstance(checks.get('candidates_by_side'), dict) else {}
-        empty_sides = [
-            s for s in ('put', 'call')
-            if isinstance(by_side.get(s), dict) and by_side[s].get('market_no_eligible_strike') is True
-        ]
         allowed_empty_reasons = set()
         for s in empty_sides:
             st_lbl = by_side[s].get('status')
@@ -6712,14 +6772,45 @@ def evaluate_source_readiness(
                 f'candidate_{s}_last_valid_candidate_summary',
                 f'candidate_{s}_no_verified_eligible_strike',
             })
+            if by_side[s].get('structural_no_spread') is True and checks.get('upstream_code') is None:
+                other = 'call' if s == 'put' else 'put'
+                allowed_empty_reasons.update({
+                    f'candidate_{s}_not_complete',
+                    f'candidate_{s}_delta_population_incomplete',
+                    f'candidate_{s}_capture_not_complete:PARTIAL',
+                    f'candidate_{s}_capture_not_complete:INCOMPLETE',
+                    f'candidate_{other}_capture_not_complete:PARTIAL',
+                    f'candidate_{other}_capture_not_complete:INCOMPLETE',
+                    'discovery_capture_not_complete:PARTIAL',
+                    'discovery_capture_not_complete:INCOMPLETE',
+                    'data_health_discovery_not_complete:PARTIAL',
+                    'data_health_discovery_not_complete:INCOMPLETE',
+                    'data_health_discovery_status:USAGE_LIMITED',
+                    'data_health_discovery_unusable:PARTIAL',
+                    'data_health_discovery_unusable:INCOMPLETE',
+                })
         if has_view and empty_sides and all(r in allowed_empty_reasons for r in deduped):
-            status = 'MARKET_SINGLE_SIDE_ONLY'
+            if len(empty_sides) == 2:
+                status = 'MARKET_NO_ELIGIBLE_CANDIDATES'
+            elif not has_source or len(source_absent_keys) == 1 or set(checks.get('source_case_sides') or ()) == ({'put', 'call'} - set(empty_sides)):
+                status = 'MARKET_SINGLE_SIDE_ONLY'
+            else:
+                status = 'UPSTREAM_BLOCKED'
         else:
             status = 'UPSTREAM_BLOCKED'
+    absent_union = source_absent_keys | set(empty_sides)
+    if not absent_union and checks.get('source_case_sides'):
+        absent_union = {'put', 'call'} - set(checks['source_case_sides'])
+    active_lock_sides = (
+        [s for s in ('put', 'call') if s not in absent_union]
+        if status == 'MARKET_SINGLE_SIDE_ONLY'
+        else ['put', 'call']
+    )
     checks['accept_lock_ready'] = bool(
-        status == 'SOURCE_READY'
+        status in {'SOURCE_READY', 'MARKET_SINGLE_SIDE_ONLY'}
         and has_view
-        and all(checks['live_lock_eligible_by_side'].get(s) is True for s in ('put', 'call'))
+        and active_lock_sides
+        and all(checks['live_lock_eligible_by_side'].get(s) is True for s in active_lock_sides)
     )
     return {'status': status, 'reasons': deduped, 'checks': checks}
 
@@ -6870,7 +6961,12 @@ def prewarm(plan, archive, service, *, clock=dossier.now_ms, public=dossier.publ
         if prep_ready:
             raw_cases = prep.get('cases')
             qual_now = max(now, clock())
-            sides_ok = isinstance(sides_info.get('put'), dict) and isinstance(sides_info.get('call'), dict)
+            is_single_side = prep_status == 'MARKET_SINGLE_SIDE_ONLY'
+            present_case_sides = [
+                s for s in ('put', 'call')
+                if isinstance(sides_info.get(s), dict) and isinstance(raw_cases, dict) and isinstance(raw_cases.get(s), dict)
+            ]
+            sides_ok = (len(present_case_sides) == 1) if is_single_side else (len(present_case_sides) == 2)
             cases_ok = (
                 sides_ok
                 and isinstance(raw_cases, dict)
@@ -6885,6 +6981,7 @@ def prewarm(plan, archive, service, *, clock=dossier.now_ms, public=dossier.publ
                     require_content_sha256=True,
                     require_l3=True,
                     input_profile=input_profile,
+                    allow_single_side=is_single_side,
                 )['ok']
             )
             if not cases_ok:

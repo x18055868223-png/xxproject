@@ -284,7 +284,7 @@ def run_deal_worker(
     if not (
         isinstance(prep, dict)
         and prep.get("ready_for_deal") is True
-        and prep.get("readiness_status") == "SOURCE_READY"
+        and prep.get("readiness_status") in {"SOURCE_READY", "MARKET_SINGLE_SIDE_ONLY"}
         and isinstance(prep.get("cases"), dict)
     ):
         return {
@@ -298,6 +298,8 @@ def run_deal_worker(
 
     expiry = int(prep["target_expiry_ms"])
     dealt_cases = prep["cases"]
+    is_single_side = prep.get("readiness_status") == "MARKET_SINGLE_SIDE_ONLY"
+    absent_sides = prep.get("absent_sides") if isinstance(prep.get("absent_sides"), dict) else None
     now_qual = int(d.clock())
     qual = evidence_qual.qualify_deal_case_pair(
         dealt_cases.get("put"),
@@ -310,6 +312,7 @@ def run_deal_worker(
         require_content_sha256=True,
         require_l3=True,
         input_profile=input_profile,
+        allow_single_side=is_single_side,
     )
     if not qual.get("ok"):
         return {
@@ -324,7 +327,8 @@ def run_deal_worker(
     with tracking._short_writer(d):
         hand = d.expect(expiry, "AD_HOC", plan=plan, slot=None, reference=reference)
     try:
-        source = dossier.collect(
+        source = tracking._call_with_supported_kwargs(
+            dossier.collect,
             archive_view,
             expiry,
             int(d.clock()),
@@ -334,6 +338,7 @@ def run_deal_worker(
             fallback_cases=dealt_cases,
             provenance_override="manual ad-hoc shadow trial verified workbench native case + Deribit public read",
             input_profile=input_profile,
+            absent_sides=absent_sides,
         )
         with tracking._short_writer(d):
             d.deal(hand, source, input_profile=input_profile)

@@ -96,6 +96,59 @@ def _strict_p5_reply_text(
     return "\n\n".join(paragraphs) + "\n\n<ANNOTATION_JSON>\n" + json.dumps(ann, ensure_ascii=False) + "\n</ANNOTATION_JSON>"
 
 
+def _strict_p5_single_side_reply_text(
+    action_header: str = "## Accept / Call",
+    *,
+    available_side: str = "call",
+    short_strike: int = 61_000,
+    long_strike: int = 62_000,
+    require_outside_at_t0: bool = True,
+) -> str:
+    if available_side == "call":
+        side_txt = f"Call路径判断：上方短腿{short_strike:,}、保护腿{long_strike:,}与现价保留缓冲，仅评估Call侧。"
+        cnt_txt = f"Call最强反证：现货主动净买若持续放大，上侧短腿{short_strike:,}可能承压。"
+        side_key, cnt_key = "call", "call_counter"
+    else:
+        side_txt = f"Put路径判断：下方短腿{short_strike:,}、保护腿{long_strike:,}与现价保留缓冲，仅评估Put侧。"
+        cnt_txt = f"Put最强反证：现货主动净卖若持续放大，下侧短腿{short_strike:,}可能承压。"
+        side_key, cnt_key = "put", "put_counter"
+    comp_txt = f"对比与结论：本轮仅{available_side.title()}侧存在合格候选，围绕该侧完成独立判断。"
+    cmp_word = "严格高于" if available_side == "call" else "严格低于"
+    outside_word = "下方" if available_side == "call" else "上方"
+    hist_txt = f"冻结历史事实：读取截止前指数始终位于{available_side.title()}卖出短腿{short_strike:,}{outside_word}。"
+    acc_txt = "承担条件：外侧余量尚存，若盘中短腿外侧余量实质收缩且现货主动流同向转强，触发独立复核。"
+    conf_txt = (
+        f"破坏确认口径：采用 entry_not_returned，首次检查为入场后下一UTC整分钟，之后每5分钟（check_interval_ms=300000）执行一次，"
+        f"btc_usd 分钟采样{cmp_word}卖出短腿{short_strike:,}即记为进入（包含保护腿{long_strike:,}边界及其外侧）且至检查点仍未严格回到短腿外侧才触发，"
+        f"触及短腿不算进入也不算返回。"
+    )
+    paragraphs = [action_header, side_txt, cnt_txt, comp_txt]
+    ann: dict = {
+        side_key: side_txt,
+        cnt_key: cnt_txt,
+        "comparison": comp_txt,
+        "depends_on_ard": False,
+    }
+    if action_header.startswith("## Accept"):
+        paragraphs.extend([hist_txt, acc_txt, conf_txt])
+        ann["condition_plan"] = {
+            "invalidation": "entry_not_returned",
+            "check_interval_ms": 300_000,
+            "require_outside_at_t0": require_outside_at_t0,
+            "historical_facts": hist_txt,
+            "accepted_conditions": acc_txt,
+            "confirmation_excerpt": conf_txt,
+        }
+    return "\n\n".join(paragraphs) + "\n\n<ANNOTATION_JSON>\n" + json.dumps(ann, ensure_ascii=False) + "\n</ANNOTATION_JSON>"
+
+
+def _extract_pair_strikes_from_user_content(content: str, side: str) -> tuple[int, int]:
+    import re
+    m = re.search(rf"-\s*{side.upper()}:\s*short=[^\n]*?\(([\d.]+)\),\s*long=[^\n]*?\(([\d.]+)\)", content, re.I)
+    assert m is not None, f"missing {side} contract line in user content"
+    return int(float(m.group(1))), int(float(m.group(2)))
+
+
 @contextmanager
 def _sse_mock_server(script_fn):
     """Local HTTP server speaking real OpenAI/DeepSeek SSE (`text/event-stream`) and error codes."""
@@ -237,6 +290,8 @@ def _setup_nov26_workbench_and_archive(
                     payload["greeks"] = {"delta": None}
                     return {"result": payload, **receipt}
                 return {"result": _nov26_book_payload(name, clock[0], put_deltas[strike], spot), **receipt}
+            if put_cfg.get("call_above_max"):
+                return {"result": _nov26_book_payload(name, clock[0], 0.65, spot), **receipt}
             assert strike <= 70_000, f"far-OTM Call strike {name} was not pruned"
             return {"result": _nov26_book_payload(name, clock[0], call_deltas[strike], spot), **receipt}
         raise AssertionError(path)
@@ -442,6 +497,7 @@ def test_evaluate_source_readiness_pair_skew_target_expiry_p0_strict_and_single_
     }
     r_single = tracking.evaluate_source_readiness(workbench_view=single_side_view, now_ms=now_ms, target_expiry_ms=target_exp, input_profile="p0_strict@1")
     assert r_single["status"] == "MARKET_SINGLE_SIDE_ONLY"
+    assert r_single["checks"]["accept_lock_ready"] is True
     assert "candidate_call_no_verified_eligible_strike" in r_single["reasons"]
 
     inc_view = json.loads(json.dumps(single_side_view))
@@ -643,70 +699,154 @@ def test_nov26_hand_66a598b4_full_stage_by_stage_e2e_recovery_lock_audit_and_hol
 # ---------------------------------------------------------------------------
 
 def test_data_path_counterexample_matrix_fail_closed_and_race_safety(tmp_path, monkeypatch, capsys):
-    # Counterexample A: Missing Put (`above_max` -> verified_eligible=0, MARKET_SINGLE_SIDE_ONLY) across 6 ticks + 16:32Z close + settle_due
+    # Counterexample A1: Confirmed Put-absent (`above_max` -> verified_eligible=0, MARKET_SINGLE_SIDE_ONLY) now proceeds on Call via formal path!
     slot_0 = int(datetime(2026, 11, 26, 16, 0, tzinfo=timezone.utc).timestamp() * 1000)
     clock = [slot_0 - 8 * M]
-    wb_miss, arch_miss, dos_miss, plan_r16, slot_ms, expiry_ms, _, sync_aux_miss = _setup_nov26_workbench_and_archive(
-        tmp_path / "miss_put", monkeypatch, clock=clock, put_mode={"above_max": True},
+    wb_ss, arch_ss, dos_ss, plan_r16, slot_ms, expiry_ms, _, sync_aux_ss = _setup_nov26_workbench_and_archive(
+        tmp_path / "single_side_call", monkeypatch, clock=clock, put_mode={"above_max": True},
+    )
+    monkeypatch.setenv("LLM_API_KEY", "k-single")
+
+    def call_accept_script(_idx, body):
+        short_k, long_k = _extract_pair_strikes_from_user_content(body["messages"][1]["content"], "call")
+        return {
+            "status": 200,
+            "reasoning": "仅Call侧合格，逐项核查Call路径与最强反证。",
+            "text": _strict_p5_single_side_reply_text(
+                "## Accept / Call", available_side="call", short_strike=short_k, long_strike=long_k, require_outside_at_t0=True
+            ),
+            "finish_reason": "stop",
+        }
+
+    with serving(wb_ss) as base_ss, _sse_mock_server(call_accept_script) as (llm_ep_ss, llm_calls_ss):
+        svc_ss = post(base_ss, wb_ss)
+
+        # 15:52Z Prewarm returns READY_FOR_DEAL with empty blockers & no stderr alert
+        capsys.readouterr()
+        rep_pre = tracking.prewarm(plan_r16, arch_ss, svc_ss, clock=lambda: clock[0], public=dossier.public)
+        cap = capsys.readouterr()
+        assert rep_pre["state"] == "PREWARM"
+        assert rep_pre["business_readiness"]["ready_for_deal"] is True
+        assert rep_pre["business_readiness"]["status"] == "READY_FOR_DEAL"
+        assert rep_pre["business_readiness"]["blockers"] == []
+        assert rep_pre["business_readiness"]["alert_level"] == "NONE"
+        assert cap.err == ""
+
+        # 16:02Z Scheduled auto_deal -> deals Call-only hand, backfills 16_call_cf_*.json.gz only, creates Call shadow lock
+        clock[0] = slot_ms + 2 * M
+        sync_aux_ss()
+        d_ss = dossier.Dossiers(dos_ss, clock=lambda: clock[0], require_reply_provenance=True)
+        llm_cfg_ss = {
+            "api_key": "k-single",
+            "model": "deepseek-reasoner",
+            "endpoint": llm_ep_ss,
+            "prompt_version": review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+            "input_profile": "p0_strict@1",
+        }
+        rows_ss = tracking.auto_deal(d_ss, plan_r16, arch_ss, svc_ss, llm_config=llm_cfg_ss)
+        assert len(rows_ss) == 1
+        assert rows_ss[0]["status"] == "VALID"
+        assert rows_ss[0]["decision"] == "Accept"
+        assert rows_ss[0]["link"]["state"] == "SHADOW_LOCK_CREATED"
+        assert rows_ss[0]["link"]["execution_allowed"] is False
+
+        case_dir_16 = arch_ss / "cases" / "2026-11-26"
+        assert len(list(case_dir_16.glob("16_put_cf_*.json.gz"))) == 0
+        assert len(list(case_dir_16.glob("16_call_cf_*.json.gz"))) == 1
+        assert archive.Archive(arch_ss).verify()["ok"] is True
+
+        hand_ss = d_ss.path(expiry_ms) / "hands" / rows_ss[0]["hand_id"]
+        src_ss = dossier.read(hand_ss / "evidence" / "source.json")
+        assert len(src_ss["cases"]) == 1 and "put" in src_ss["absent_sides"]
+        orig_ss = tracking.audit_originals(hand_ss)
+        assert "禁止 Accept/Put" in orig_ss["input"] and "无合格价差候选" in orig_ss["input"]
+        aud_ss = tracking.audit_record(hand_ss, clock[0], {}, detail=True)
+        assert aud_ss["decision"]["judgment"]["action"] == "Accept"
+        assert aud_ss["decision"]["judgment"]["side"] == "call"
+
+        # 16:07Z repeat tick -> idempotent ALREADY_DECIDED, 1 LLM call, 1 Call archive case
+        clock[0] = slot_ms + 7 * M
+        rows_ss2 = tracking.auto_deal(d_ss, plan_r16, arch_ss, svc_ss, llm_config=llm_cfg_ss)
+        assert rows_ss2[0]["status"] == "ALREADY_DECIDED"
+        assert len(llm_calls_ss) == 1
+        assert len(list(case_dir_16.glob("16_call_cf_*.json.gz"))) == 1
+
+        # Downstream 16:10Z tracking sync + SHADOW_ONLY ExecutionCoordinator scan + post-expiry settle_due
+        clock[0] = slot_ms + 10 * M
+        sync_aux_ss()
+        wb_ss.refresh(now_ms=clock[0], record_daily=False)
+        sync_ss = tracking.sync(d_ss, hand_ss, svc_ss, check_due=True, archive_root=arch_ss)
+        assert sync_ss["state"] == "active"
+
+        from tools import astra_exec_store_v1 as exec_store, astra_execution_coordinator_v1 as exec_coord
+        coord_dir = tmp_path / "coord_shadow_ss"
+        coord_dir.mkdir(parents=True, exist_ok=True)
+        coord = exec_coord.ExecutionCoordinator(
+            mode="SHADOW_ONLY",
+            env_tag="shadow",
+            subaccount_id="shadow",
+            store=exec_store.ExecutionStore(coord_dir / "exec.sqlite3"),
+            adapter=None,
+            status_path=coord_dir / "status.json",
+            dossier_root=dos_ss,
+        )
+        coord.startup_init(now_ms=clock[0])
+        coord_tick = coord.run_tick(now_ms=clock[0])
+        assert coord_tick["mode"] == "SHADOW_ONLY" and coord_tick["writes_enabled"] is False
+
+        clock[0] = expiry_ms + 5 * M
+        settled_ss = list(d_ss.settle_due())
+        assert len(settled_ss) == 1
+        assert list(d_ss.settle_due()) == []
+
+    # Counterexample A2: BOTH Put and Call confirmed market-absent (`above_max` on both -> MARKET_NO_ELIGIBLE_CANDIDATES) across 6 ticks + settle_due
+    clock_both = [slot_0 - 8 * M]
+    wb_miss, arch_miss, dos_miss, plan_both, slot_ms_b, expiry_ms_b, _, sync_aux_miss = _setup_nov26_workbench_and_archive(
+        tmp_path / "miss_both", monkeypatch, clock=clock_both, put_mode={"above_max": True, "call_above_max": True},
     )
     monkeypatch.setenv("LLM_API_KEY", "k-never")
 
     with serving(wb_miss) as base_miss:
         svc_miss = post(base_miss, wb_miss)
 
-        # 15:52Z Prewarm emits early warning on stderr (`MARKET_SINGLE_SIDE_ONLY`)
         capsys.readouterr()
-        rep_pre = tracking.prewarm(plan_r16, arch_miss, svc_miss, clock=lambda: clock[0], public=dossier.public)
-        cap = capsys.readouterr()
-        assert rep_pre["state"] == "PREWARM"
-        assert rep_pre["business_readiness"]["ready_for_deal"] is False
-        assert rep_pre["business_readiness"]["status"] == "MARKET_SINGLE_SIDE_ONLY"
-        assert cap.err.startswith("PREWARM_ALERT ")
+        rep_pre_b = tracking.prewarm(plan_both, arch_miss, svc_miss, clock=lambda: clock_both[0], public=dossier.public)
+        cap_b = capsys.readouterr()
+        assert rep_pre_b["state"] == "PREWARM"
+        assert rep_pre_b["business_readiness"]["ready_for_deal"] is False
+        assert rep_pre_b["business_readiness"]["status"] == "MARKET_NO_ELIGIBLE_CANDIDATES"
+        assert cap_b.err.startswith("PREWARM_ALERT ")
 
-        d_miss = dossier.Dossiers(dos_miss, clock=lambda: clock[0])
-        never_llm = {"api_key": "k-never", "transport": lambda *_a, **_kw: pytest.fail("LLM must never run without dual evidence")}
+        d_miss = dossier.Dossiers(dos_miss, clock=lambda: clock_both[0])
+        never_llm = {"api_key": "k-never", "transport": lambda *_a, **_kw: pytest.fail("LLM must never run when both sides absent")}
 
-        # 6 ticks: 16:02, 16:07, 16:12, 16:17, 16:22, 16:27 UTC
         for attempt_idx, minute_offset in enumerate((2, 7, 12, 17, 22, 27), start=1):
-            clock[0] = slot_ms + minute_offset * M
+            clock_both[0] = slot_ms_b + minute_offset * M
             sync_aux_miss()
-            res, = tracking.auto_deal(
-                d_miss, plan_r16, arch_miss, svc_miss, llm_config=never_llm,
-            )
+            res, = tracking.auto_deal(d_miss, plan_both, arch_miss, svc_miss, llm_config=never_llm)
             assert res["status"] == "NO_EVIDENCE"
             assert res["block_state"] == "DATA_BLOCKED"
             assert res["attempts"] == attempt_idx
             assert res["window_closed"] is False
 
-        hand_miss = d_miss.path(expiry_ms) / "hands" / "hand_66a598b4790172fa3fd56276"
+        hand_miss = d_miss.path(expiry_ms_b) / "hands" / "hand_66a598b4790172fa3fd56276"
         assert not (hand_miss / "evidence").exists()
         notes = [dossier.read(p) for p in (hand_miss / "issuance").glob("*.json")]
         assert len(notes) == 1
         assert notes[0]["state"] == "DATA_BLOCKED"
         assert notes[0]["attempt_count"] == 6
-        assert notes[0]["first_recorded_at_ms"] == slot_ms + 2 * M
-        assert notes[0]["diagnostics"]["readiness_status"] == "MARKET_SINGLE_SIDE_ONLY"
-        assert notes[0]["diagnostics"]["backfill_attempted"] is True
+        assert notes[0]["diagnostics"]["readiness_status"] == "MARKET_NO_ELIGIBLE_CANDIDATES"
+        assert "Put(" in notes[0]["reason"] and "Call(" in notes[0]["reason"]
 
-        # 16:32Z window-close sweep stamps `window_closed_at_ms` WITHOUT overwriting `DATA_BLOCKED` with `MISSED`
-        clock[0] = slot_ms + 32 * M
-        res_close, = tracking.auto_deal(
-            d_miss, plan_r16, arch_miss, svc_miss, llm_config=never_llm,
-        )
-        assert res_close["status"] == "NO_EVIDENCE"
-        assert res_close["block_state"] == "DATA_BLOCKED"
-        assert res_close["window_closed"] is True
+        clock_both[0] = slot_ms_b + 32 * M
+        res_close, = tracking.auto_deal(d_miss, plan_both, arch_miss, svc_miss, llm_config=never_llm)
+        assert res_close["block_state"] == "DATA_BLOCKED" and res_close["window_closed"] is True
         notes_after = [dossier.read(p) for p in (hand_miss / "issuance").glob("*.json")]
-        assert len(notes_after) == 1
-        assert notes_after[0]["state"] == "DATA_BLOCKED"
-        assert notes_after[0]["window_closed_at_ms"] == slot_ms + 32 * M
+        assert len(notes_after) == 1 and notes_after[0]["window_closed_at_ms"] == slot_ms_b + 32 * M
 
-        # Post-expiry 08:05Z: settle_due writes UNVERIFIED once and skips repeat runs; Day D+1 auto_deal never deals expired hand
-        clock[0] = expiry_ms + 5 * M
-        settled_1 = list(d_miss.settle_due())
-        assert len(settled_1) == 1
-        settled_2 = list(d_miss.settle_due())
-        assert settled_2 == []
+        clock_both[0] = expiry_ms_b + 5 * M
+        assert len(list(d_miss.settle_due())) == 1
+        assert list(d_miss.settle_due()) == []
 
     # Counterexample B: Stale Snapshot / Missing L4 RV24 / Incomplete HTTP 200 (`delta=None`) NEVER leak `cases`
     clock_b = [slot_0 + 2 * M]
@@ -1019,3 +1159,102 @@ def test_model_path_real_sse_truncation_parse_retry_crash_recovery_and_budget_gu
         assert rec_row["status"] == "ALREADY_DECIDED" and rec_row["decision"] == "Accept"
         assert rec_row["link"]["state"] == "SHADOW_LOCK_CREATED"
         assert len(calls_crash) == 1
+
+
+def test_single_side_contract_reject_illegal_accept_and_transient_recovery(tmp_path, monkeypatch):
+    slot_0 = int(datetime(2026, 11, 26, 16, 0, tzinfo=timezone.utc).timestamp() * 1000)
+
+    # 1. Single-side Reject on Put-absent / Call-only hand succeeds VALID cleanly with zero shadow lock
+    clk_rej = [slot_0 + 2 * M]
+    wb_r, arch_r, dos_r, plan_r, _, exp_r, _, sync_r = _setup_nov26_workbench_and_archive(
+        tmp_path / "ss_reject", monkeypatch, clock=clk_rej, put_mode={"above_max": True},
+    )
+    rej_text = _strict_p5_single_side_reply_text("## Reject", available_side="call", short_strike=61_000, long_strike=62_000)
+    with serving(wb_r) as base_r, _sse_mock_server(lambda _i, _b: {"status": 200, "text": rej_text, "finish_reason": "stop"}) as (ep_r, calls_r):
+        svc_r = post(base_r, wb_r)
+        d_r = dossier.Dossiers(dos_r, clock=lambda: clk_rej[0], require_reply_provenance=True)
+        res_r, = tracking.auto_deal(
+            d_r, plan_r, arch_r, svc_r,
+            llm_config={"api_key": "k-r", "model": "deepseek-reasoner", "endpoint": ep_r,
+                        "prompt_version": review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION, "input_profile": "p0_strict@1"},
+        )
+        assert res_r["status"] == "VALID" and res_r["decision"] == "Reject"
+        assert len(calls_r) == 1
+        hand_r = d_r.path(exp_r) / "hands" / res_r["hand_id"]
+        assert not (hand_r / "tracking" / "link.json").exists()
+
+    # 2. Single-side illegal Accept/Put (absent side!) is hard-blocked (`PARSE_FAILED`), zero decision, zero shadow lock
+    clk_bad = [slot_0 + 2 * M]
+    wb_b, arch_b, dos_b, plan_b, _, exp_b, _, sync_b = _setup_nov26_workbench_and_archive(
+        tmp_path / "ss_illegal", monkeypatch, clock=clk_bad, put_mode={"above_max": True},
+    )
+    illegal_put_accept = _strict_p5_reply_text("## Accept / Put", short_strike=60_000, long_strike=58_000, require_outside_at_t0=True)
+    with serving(wb_b) as base_b, _sse_mock_server(lambda _i, _b: {"status": 200, "text": illegal_put_accept, "finish_reason": "stop"}) as (ep_b, calls_b):
+        svc_b = post(base_b, wb_b)
+        d_b = dossier.Dossiers(dos_b, clock=lambda: clk_bad[0], require_reply_provenance=True)
+        res_b, = tracking.auto_deal(
+            d_b, plan_b, arch_b, svc_b,
+            llm_config={"api_key": "k-b", "model": "deepseek-reasoner", "endpoint": ep_b,
+                        "prompt_version": review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION, "input_profile": "p0_strict@1"},
+        )
+        assert res_b["status"] == "PARSE_FAILED"
+        hand_b = d_b.path(exp_b) / "hands" / res_b["hand_id"]
+        assert not (hand_b / "decision.json").exists()
+        assert not (hand_b / "tracking" / "link.json").exists()
+        orig_b = tracking.audit_originals(hand_b)
+        assert orig_b["response_status"] == "PARSE_FAILED"
+        att_b = dossier.read(next((hand_b / "responses").glob("*/attempt.json")))
+        assert "forbidden when put side is absent" in str(att_b.get("error") or "")
+
+    # 3. Transient missing Put (`missing_delta` or `429`) MUST NOT emit MARKET_SINGLE_SIDE_ONLY; once recovered, deals both sides!
+    for transient_key in ("missing_delta", "429"):
+        clk_t = [slot_0 + 2 * M]
+        put_state = {transient_key: True}
+        wb_t, arch_t, dos_t, plan_t, _, exp_t, _, sync_t = _setup_nov26_workbench_and_archive(
+            tmp_path / f"transient_{transient_key}", monkeypatch, clock=clk_t, put_mode=put_state,
+        )
+        with serving(wb_t) as base_t:
+            svc_t = post(base_t, wb_t)
+            d_t = dossier.Dossiers(dos_t, clock=lambda: clk_t[0])
+            res_t1, = tracking.auto_deal(
+                d_t, plan_t, arch_t, svc_t,
+                llm_config={"api_key": "k-t", "transport": lambda *_a, **_kw: pytest.fail("must not deal on transient missing")},
+            )
+            assert res_t1["status"] == "NO_EVIDENCE" and res_t1["block_state"] == "DATA_BLOCKED"
+            # Wait past 429 cooldown if active, clear transient fault -> deals dual-side cleanly
+            put_state[transient_key] = False
+            clk_t[0] += 15_000
+            sync_t()
+            wb_t.refresh(now_ms=clk_t[0], record_daily=False)
+            prep_t2 = svc_t("prepare_deal", {"target_expiry_ms": exp_t, "slot_ms": slot_0, "allow_refresh": True, "input_profile": "p0_strict@1"})
+            assert prep_t2["readiness_status"] == "SOURCE_READY" and set(prep_t2["cases"]) == {"put", "call"}
+
+    # 4. Structural 0-qualified-spread absence (`total_qualified == 0`, discovery emits `capture_state="PARTIAL"`) -> MARKET_SINGLE_SIDE_ONLY cleanly!
+    clk_struct = [slot_0 + 2 * M]
+    wb_st, _, _, _, _, exp_st, _, _ = _setup_nov26_workbench_and_archive(
+        tmp_path / "structural_single", monkeypatch, clock=clk_struct,
+    )
+    orig_pub_get = discovery._public_get
+    monkeypatch.setattr(
+        discovery,
+        "_public_get",
+        lambda b, p, pr, t: (
+            {"result": [r for r in orig_pub_get(b, p, pr, t)["result"] if not r["instrument_name"].endswith("-P")]}
+            if p == "/public/get_instruments"
+            else orig_pub_get(b, p, pr, t)
+        ),
+    )
+    st_view = wb_st.refresh(now_ms=clk_struct[0], record_daily=False)
+    prep_st = wb_st.shadow_tracking(
+        "prepare_deal",
+        {"target_expiry_ms": exp_st, "slot_ms": slot_0, "allow_refresh": False, "input_profile": "p0_strict@1"},
+    )
+    assert prep_st["readiness_status"] == "MARKET_SINGLE_SIDE_ONLY"
+    assert prep_st["ready_for_deal"] is True
+    assert set(prep_st["cases"]) == {"call"}
+    assert "put" in prep_st["absent_sides"]
+    sr_st = tracking.evaluate_source_readiness(
+        workbench_view=st_view, now_ms=clk_struct[0], target_expiry_ms=exp_st, slot_ms=slot_0, input_profile="p0_strict@1",
+    )
+    assert sr_st["status"] == "MARKET_SINGLE_SIDE_ONLY"
+    assert sr_st["checks"]["accept_lock_ready"] is True
