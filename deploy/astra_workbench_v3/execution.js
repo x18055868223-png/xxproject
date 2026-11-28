@@ -360,8 +360,8 @@ export function execModel(status, { fixture = false, nowMs = Date.now(), fetched
   const openRisk = Boolean(ep && ep.cashflow_settled !== true && (shortOpen || protOpen || cmds.length));
   const writesOff = status?.writes_enabled === false;
   const shadowMode = mode === "SHADOW_ONLY" || mode === "DRY_RUN";
-  // The producer's own flag first; infer only where writes are a real mode (v1: TESTNET only).
-  const takeover = Boolean(status?.manual_takeover_required) || (writesOff && mode === "TESTNET" && openRisk);
+  // The producer's own flag first; infer only where writes are a real mode (TESTNET / LIVE / MAINNET).
+  const takeover = Boolean(status?.manual_takeover_required) || (writesOff && (mode === "TESTNET" || mode === "LIVE" || mode === "MAINNET") && openRisk);
   const stage = ep ? stageOf(ep, refNow, takeover, cmds) : { key: "idle", text: "空闲", tone: "none" };
 
   const banners = [];

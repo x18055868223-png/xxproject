@@ -163,6 +163,12 @@ def test_missing_reads_unknown_not_zero_and_stale_is_flagged():
     m = model(real, fixture=False, nowMs=60_000)
     assert m["level"] == "bad" and any(b["title"] == "执行状态过期" for b in m["banners"])
     assert model(dict(s, mode="LIVE"))["mode"]["tone"] == "real"
+    live_unarmed = dict(states()["idle"], mode="LIVE", writes_enabled=True)
+    rendered_live_unarmed = render({"s": live_unarmed}, "(() => { const b = document.createElement('div'); E.renderExecution(b, {status: p.s}, {}); return b.textContent; })()")
+    assert "入场未启用" in rendered_live_unarmed
+    live_takeover = dict(s, mode="LIVE", writes_enabled=False, manual_takeover_required=False)
+    m_takeover = model(live_takeover, fixture=False, nowMs=live_takeover["generated_at_ms"])
+    assert m_takeover["stage"]["key"] == "takeover" and m_takeover["level"] == "bad"
     assert model(dict(s, mode="SHADOW_ONLY"))["mode"]["tone"] == "shadow"
     assert model(dict(s, mode="SOMETHING_NEW"))["mode"]["tone"] == "unknown"
 
