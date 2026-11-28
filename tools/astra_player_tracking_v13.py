@@ -3677,6 +3677,190 @@ def sync(d, hand, service, *, index_path=None, check_due=False, archive_root=Non
     return out
 
 
+def _resolve_latest_spot_for_revalidation(ep_index, ep_events, at):
+    """Return (spot_usd, spot_at_ms) from merged index points or fresh OBSERVATION fallback."""
+    pts = (ep_index or {}).get('points') if isinstance(ep_index, dict) else None
+    if isinstance(pts, list) and pts:
+        valid_pts = [
+            (int(p[0]), float(p[1]))
+            for p in pts
+            if isinstance(p, (list, tuple)) and len(p) == 2 and type(p[0]) is int
+            and p[0] <= at and dossier.player.number(p[1]) is not None and float(p[1]) > 0
+        ]
+        if valid_pts:
+            valid_pts.sort(key=lambda item: item[0])
+            ts, px = valid_pts[-1]
+            if (at - ts) <= 15 * dossier.MINUTE:
+                return px, ts
+    for ev in reversed(ep_events):
+        if ev.get('kind') != 'OBSERVATION':
+            continue
+        last_pt = ((ev.get('body') or {}).get('last_point') if isinstance(ev.get('body'), dict) else None)
+        if not isinstance(last_pt, dict):
+            continue
+        metrics = last_pt.get('metrics') if isinstance(last_pt.get('metrics'), dict) else last_pt
+        px = dossier.player.number(
+            metrics.get('spot_usd') or metrics.get('index_usd') or metrics.get('spot') or last_pt.get('index_usd')
+        )
+        obs_ts = (
+            last_pt.get('asof_ms')
+            or last_pt.get('recorded_at_ms')
+            or last_pt.get('at_ms')
+            or ev.get('observed_at_ms')
+            or ev.get('recorded_at_ms')
+        )
+        if px is not None and px > 0 and isinstance(obs_ts, int) and (at - obs_ts) <= 15 * dossier.MINUTE:
+            return float(px), obs_ts
+    return None, None
+
+
+def revalidate_entry(d, hand, service, *, archive_root=None, index_path=None, min_dte_ms=1_800_000):
+    """Run formal current-validity re-evaluation on an existing accepted hand without mutating original decision/link timestamps."""
+    dossier_id = hand.parent.parent.name
+    hand_id = hand.name
+    def _reject(reason):
+        return dict(ok=False, state='REVALIDATE_REJECTED', reason=reason, hand_id=hand_id, dossier_id=dossier_id)
+
+    link_record = optional(hand / 'tracking' / 'link.json')
+    if not isinstance(link_record, dict):
+        return _reject('missing_link_record')
+    link_state = link_record.get('state')
+    if link_state not in {'SHADOW_LOCK_CREATED', 'ALREADY_LINKED'}:
+        return _reject(f'invalid_link_state:{link_state}')
+    origin = link_record.get('origin') if isinstance(link_record.get('origin'), dict) else {}
+    ep_id = origin.get('dossier_episode_id')
+    if not ep_id or origin.get('dossier_id') != dossier_id or origin.get('hand_id') != hand_id:
+        return _reject('link_origin_identity_mismatch')
+    episode = hand.parent.parent / 'episodes' / dossier.key(ep_id)
+    frozen = optional(episode / 'condition.json')
+    dec = optional(hand / 'decision.json')
+    ep_meta = optional(episode / 'episode.json')
+    if not isinstance(frozen, dict) or not isinstance(dec, dict) or not isinstance(ep_meta, dict):
+        return _reject('missing_contract_or_decision_files')
+    contract = frozen.get('contract') if isinstance(frozen.get('contract'), dict) else {}
+    side = str(contract.get('side') or '').lower()
+    short_inst = str(contract.get('short_instrument') or '')
+    long_inst = str(contract.get('long_instrument') or '')
+    short_k = dossier.player.number(contract.get('short_strike_usd'))
+    long_k = dossier.player.number(contract.get('long_strike_usd'))
+    expiry_ms = contract.get('expiry_ms')
+    if side not in {'put', 'call'} or not short_inst or not long_inst or short_k is None or short_k <= 0 or long_k is None or long_k <= 0 or type(expiry_ms) is not int:
+        return _reject('invalid_frozen_contract')
+    judgment = dec.get('judgment') if isinstance(dec.get('judgment'), dict) else {}
+    action = str(judgment.get('action') or dec.get('action') or dec.get('decision') or '')
+    if action != 'Accept':
+        return _reject(f'decision_not_accept:{action}')
+    orig_decided_at_ms = dec.get('decided_at_ms')
+    orig_link_recorded_at_ms = link_record.get('recorded_at_ms')
+    if type(orig_decided_at_ms) is not int or orig_decided_at_ms <= 0 or type(orig_link_recorded_at_ms) is not int or orig_link_recorded_at_ms <= 0:
+        return _reject('invalid_original_timestamps')
+    if (hand / 'tracking' / 'terminal.json').is_file():
+        return _reject('hand_already_terminal')
+    if _episode_has_shadow_exit(episode, link_record):
+        return _reject('episode_shadow_exited_or_revoked')
+
+    sync_out = sync(d, hand, service, index_path=index_path, check_due=True, archive_root=archive_root, run_review=False)
+    if sync_out.get('state') != 'active':
+        return _reject(f"tracker_not_active:{sync_out.get('state')}")
+    if sync_out.get('check_error') is not None:
+        return _reject(f"check_error:{sync_out.get('check_error')}")
+
+    at = d.clock()
+    if (expiry_ms - at) < min_dte_ms:
+        return _reject('dte_below_minimum')
+
+    ep_events = sorted((load(p) for p in (episode / 'events').glob('*.json')),
+                       key=lambda e: (e['recorded_at_ms'], e['event_id']))
+    prior_reviews, _ = _load_prior_reviews_and_context(episode)
+    if any(r.get('verdict') == 'REVOKE' for r in prior_reviews):
+        return _reject('prior_revoke_decision')
+    if any(ev.get('kind') == 'AI_REVOKE' for ev in ep_events):
+        return _reject('ai_revoke_event_present')
+    if any(ev.get('kind') == 'CONDITION_TRIGGERED' for ev in ep_events):
+        return _reject('condition_triggered')
+    if any(ev.get('kind') == 'CONDITION_UNKNOWN' for ev in ep_events):
+        return _reject('condition_unknown_present')
+
+    check_ev_list = [e for e in ep_events if str(e.get('kind', '')).startswith('CONDITION_')]
+    cond_summary = _condition_check_summary(
+        check_ev_list, asof_ms=at, check_clock=frozen.get('check_clock'), expiry_ms=expiry_ms
+    )
+    mech_state = cond_summary.get('mechanical_condition_state')
+    if mech_state not in {'INTACT', 'NOT_DUE'}:
+        return _reject(f'mechanical_condition_not_intact:{mech_state}')
+
+    ep_index = index_path if index_path is not None else _merge_index_points(archive_root, expiry_ms, at)
+    if frozen.get('invalidation') == 'new_entry' and isinstance(ep_index, dict) and ep_index.get('points'):
+        after_pts = [
+            (t, p) for t, p in ep_index['points']
+            if type(t) is int and frozen['entry_at_ms'] < t <= at and dossier.player.number(p) is not None and float(p) > 0
+        ]
+        if after_pts:
+            trace = dossier.condition.responsibility_trace(
+                [(frozen['entry_at_ms'], frozen['entry_index_usd']), *sorted(after_pts)],
+                side,
+                short_k,
+            )
+            if any(ep.get('entered_ms') is not None and ep['entered_ms'] > frozen['entry_at_ms'] for ep in trace['episodes']):
+                return _reject('instantaneous_new_entry_breach')
+
+    latest_spot, latest_spot_at_ms = _resolve_latest_spot_for_revalidation(ep_index, ep_events, at)
+    if latest_spot is None or latest_spot <= 0:
+        return _reject('latest_spot_unavailable')
+    price_state = dossier.condition.classify_price_state(latest_spot, contract)
+    if price_state.get('state') != 'OUTSIDE':
+        return _reject(f"spot_not_outside_short_strike:{price_state.get('state')}")
+
+    decision_sha256 = str(origin.get('decision_sha256') or dossier.sha((hand / 'decision.json').read_bytes()))
+    condition_sha256 = str(origin.get('condition_sha256') or dossier.sha((episode / 'condition.json').read_bytes()))
+    decision_id = str(origin.get('decision_id') or dec.get('attempt_id') or dec.get('decision_id') or '')
+    body = dict(
+        schema='entry_revalidated@1',
+        verdict='VALID',
+        dossier_id=dossier_id,
+        hand_id=hand_id,
+        episode_id=episode.name,
+        decision_id=decision_id,
+        decision_sha256=decision_sha256,
+        condition_sha256=condition_sha256,
+        side=side,
+        short_instrument=short_inst,
+        long_instrument=long_inst,
+        short_strike_usd=short_k,
+        long_strike_usd=long_k,
+        expiry_ms=expiry_ms,
+        original_decided_at_ms=orig_decided_at_ms,
+        original_link_recorded_at_ms=orig_link_recorded_at_ms,
+        revalidated_at_ms=at,
+        remaining_dte_ms=expiry_ms - at,
+        mechanical_condition_state=mech_state,
+        latest_check_at_ms=cond_summary.get('latest_at_ms'),
+        latest_spot_usd=latest_spot,
+        latest_spot_at_ms=latest_spot_at_ms,
+        price_state=price_state.get('state'),
+        tracker_status=sync_out.get('state'),
+        sync_event_id=sync_out.get('event_id'),
+    )
+    event_id = dossier.identity('entry_reval', hand_id, episode.name, at, condition_sha256, decision_sha256)
+    with _short_writer(d):
+        ev = d.event(episode, event_id, 'ENTRY_REVALIDATED', body, observed=at, available=at, decided=at)
+    return dict(
+        ok=True,
+        state='ENTRY_REVALIDATED',
+        event_id=ev['event_id'],
+        dossier_id=dossier_id,
+        hand_id=hand_id,
+        episode_id=episode.name,
+        decision_id=decision_id,
+        short_instrument=short_inst,
+        long_instrument=long_inst,
+        revalidated_at_ms=at,
+        remaining_dte_ms=expiry_ms - at,
+        latest_spot_usd=latest_spot,
+        mechanical_condition_state=mech_state,
+    )
+
+
 def _recover_condition_plan(hand, decision):
     att_id = decision.get('attempt_id') if isinstance(decision, dict) else None
     if att_id:
@@ -4983,6 +5167,12 @@ def _event_projection(ev):
     elif kind == 'CONDITION_TRIGGERED':
         res = body.get('result') if isinstance(body.get('result'), dict) else {}
         item.update(summary=res.get('rule') or '原冻结条件已触发')
+    elif kind == 'ENTRY_REVALIDATED':
+        item.update(
+            verdict=body.get('verdict'),
+            revalidated_at_ms=body.get('revalidated_at_ms'),
+            summary=f"入场有效性复核通过 · {body.get('short_instrument')}/{body.get('long_instrument')}",
+        )
     return item
 
 
@@ -7319,6 +7509,12 @@ def main(argv=None):
     rec_sx.add_argument('--dossier', required=True)
     rec_sx.add_argument('--hand', required=True)
     rec_sx.add_argument('--series-jsonl', type=Path)
+    reval = sub.add_parser('revalidate-entry')
+    reval.add_argument('--root', type=Path, required=True)
+    reval.add_argument('--dossier', required=True)
+    reval.add_argument('--hand', required=True)
+    reval.add_argument('--archive', type=Path, default=None)
+    reval.add_argument('--min-dte-ms', type=int, default=1_800_000)
     args = parser.parse_args(argv)
     try:
         try:
@@ -7338,6 +7534,18 @@ def main(argv=None):
                 out = reconcile_historical_shadow_exit(d, hand, service=service, series_rows=s_rows)
                 with _short_writer(d):
                     d.summary(load(hand / 'expected.json')['expiry_ms'])
+            elif args.command == 'revalidate-entry':
+                hand = hand_path(args.root, args.dossier, args.hand)
+                out = revalidate_entry(
+                    d,
+                    hand,
+                    service,
+                    archive_root=args.archive,
+                    min_dte_ms=args.min_dte_ms,
+                )
+                if out.get('ok'):
+                    with _short_writer(d):
+                        d.summary(load(hand / 'expected.json')['expiry_ms'])
             elif args.command == 'sync-open':
                 out = sync_open(
                     d,
@@ -7374,7 +7582,7 @@ def main(argv=None):
     } or (row.get('status') == 'AUTO_ATTEMPTED' and row.get('last_status') != 'VALID')
       or (row.get('link') or {}).get('state') in {'LOCK_BLOCKED', 'LINK_UNVERIFIED'} for row in out):
         parser.exit(2)
-    if isinstance(out, dict) and out.get('state') in {'LOCK_BLOCKED', 'LINK_UNVERIFIED', 'NO_TRACKING_REQUEST'}:
+    if isinstance(out, dict) and out.get('state') in {'LOCK_BLOCKED', 'LINK_UNVERIFIED', 'NO_TRACKING_REQUEST', 'REVALIDATE_REJECTED'}:
         parser.exit(2)
 
 

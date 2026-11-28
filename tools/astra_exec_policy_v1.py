@@ -208,12 +208,47 @@ def check_new_exposure_permission(
 
     # Freshness & expiry time gates evaluated at the current post-query / send boundary timestamp
     if purpose in {"ADMIT", "EP"} and p5_contract is not None:
+        if p5_contract.decided_at_ms <= 0:
+            return ExposurePermission(False, "DECISION_TIMESTAMP_OUT_OF_WINDOW", halt_entry=(episode is not None))
+        if p5_contract.link_recorded_at_ms <= 0:
+            return ExposurePermission(False, "LINK_TIMESTAMP_OUT_OF_WINDOW", halt_entry=(episode is not None))
         dec_age = now_ms - p5_contract.decided_at_ms
         link_age = now_ms - p5_contract.link_recorded_at_ms
-        if p5_contract.decided_at_ms <= 0 or dec_age < -5_000 or dec_age > config.max_decision_age_ms:
-            return ExposurePermission(False, "DECISION_TIMESTAMP_OUT_OF_WINDOW", halt_entry=(episode is not None))
-        if p5_contract.link_recorded_at_ms <= 0 or link_age < -5_000 or link_age > config.max_decision_age_ms:
-            return ExposurePermission(False, "LINK_TIMESTAMP_OUT_OF_WINDOW", halt_entry=(episode is not None))
+        orig_dec_ok = -5_000 <= dec_age <= config.max_decision_age_ms
+        orig_link_ok = -5_000 <= link_age <= config.max_decision_age_ms
+        if not (orig_dec_ok and orig_link_ok):
+            expected_chash = compute_contract_hash(
+                dossier_id=p5_contract.dossier_id,
+                hand_id=p5_contract.hand_id,
+                p5_episode_id=p5_contract.episode_id,
+                decision_sha256=p5_contract.decision_sha256,
+                condition_sha256=p5_contract.condition_sha256,
+                short_instrument=p5_contract.short_instrument,
+                long_instrument=p5_contract.long_instrument,
+                expiry_ms=p5_contract.expiry_ms,
+            )
+            reval_ts = p5_contract.entry_revalidated_at_ms
+            reval_age = (now_ms - reval_ts) if reval_ts is not None else None
+            reval_ok = bool(
+                reval_ts is not None
+                and reval_ts > 0
+                and reval_ts >= max(p5_contract.decided_at_ms, p5_contract.link_recorded_at_ms)
+                and reval_age is not None
+                and (-5_000 <= reval_age <= config.max_decision_age_ms)
+                and p5_contract.entry_revalidated_hand_id == p5_contract.hand_id
+                and p5_contract.entry_revalidated_contract_hash == expected_chash
+                and (
+                    episode is None
+                    or not episode.contract_hash
+                    or p5_contract.entry_revalidated_contract_hash == episode.contract_hash
+                )
+            )
+            if not reval_ok:
+                return ExposurePermission(
+                    False,
+                    "DECISION_TIMESTAMP_OUT_OF_WINDOW" if not orig_dec_ok else "LINK_TIMESTAMP_OUT_OF_WINDOW",
+                    halt_entry=(episode is not None),
+                )
 
     if purpose == "ADMIT":
         if p5_contract is None:

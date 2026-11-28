@@ -888,3 +888,230 @@ def test_u5_revoke_expiry_blocking_and_ep_filled_convergence(
         assert D(st_4.rebuild_episode_ledger(ep_4_done.episode_id)["accounting"]["episode_total_realized_pnl_btc"]) == oracle_4.expected_episode_realized_pnl_btc
     finally:
         st_4.close()
+
+
+# ---------------------------------------------------------------------------
+# U6: Entry Re-Evaluation Bridge for Stale (>180s) Original Contract
+# ---------------------------------------------------------------------------
+
+
+def test_u6_entry_revalidation_bridge_preserves_identity_and_security(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LLM_API_KEY", "k-u6-env")
+    monkeypatch.setenv("ASTRA_PLAYER_USAGE_LEDGER", str(tmp_path / "u6.json"))
+    slot_0, _exp_ms, spot, _rows, _cd = p5_e2e._nov26_27nov26_chain()
+    accept_put = p5_e2e._strict_p5_reply_text("## Accept / Put", short_strike=60_000, long_strike=58_000, require_outside_at_t0=True)
+
+    wb, d_obj, arch, dos, hand_dir, ep_dir, cond, clk, sync_fn, hand_id = _make_real_p5_accept(
+        tmp_path / "p5", monkeypatch, slot_0=slot_0, accept_put=accept_put, tag="u6"
+    )
+    short_inst, long_inst = str(cond["short_instrument"]), str(cond["long_instrument"])
+    orig_dec = json.loads((hand_dir / "decision.json").read_text(encoding="utf-8"))
+    orig_link = json.loads((hand_dir / "tracking" / "link.json").read_text(encoding="utf-8"))
+    orig_decided_ms = int(orig_dec["decided_at_ms"])
+    orig_link_ms = int(orig_link["recorded_at_ms"])
+
+    # Advance 45 minutes (> 180s global TTL) while spot remains outside short strike ($60,000)
+    stale_now = orig_link_ms + 45 * M
+    clk[0] = stale_now
+    sync_fn()
+    wb.refresh(now_ms=stale_now, record_daily=False)
+    # Provide an offline minute-grid index_path up to stale_now so revalidate_entry runs without network
+    entry_at_ms = int(json.loads((ep_dir / "condition.json").read_text(encoding="utf-8"))["entry_at_ms"])
+    idx_pts = [
+        [t, float(spot)]
+        for t in range((entry_at_ms // M + 1) * M, stale_now + 1, M)
+    ]
+    idx_path = {"index_name": "btc_usd", "expiry_ms": int(cond["expiry_ms"]), "points": idx_pts}
+
+    # 1) Stale hand WITHOUT ENTRY_REVALIDATED is rejected
+    venue_1 = _new_venue_from_p5_contract(cond, now_ms=stale_now, spot_usd=spot)
+    st_1, _adp_1, coord_1 = _new_armed_coord(tmp_path / "e1", venue_1, dos, qty_btc="0.1", slice_btc="0.1")
+    try:
+        out_1 = coord_1.run_tick(now_ms=venue_1.server_time_ms)
+        assert _reject_reason_from_tick(out_1, coord_1) in {"DECISION_TIMESTAMP_OUT_OF_WINDOW", "LINK_TIMESTAMP_OUT_OF_WINDOW"}
+        assert st_1.get_latest_episode() is None and venue_1.export_raw_trades() == []
+    finally:
+        st_1.close()
+
+    # 2) Formal revalidate_entry appends ENTRY_REVALIDATED without mutating original decision/link timestamps,
+    #    then coordinator admits via formal ADMIT -> EP -> ES -> TP_MANAGED, and disarming entry_armed=False keeps TP/REVOKE intact.
+    with serving(wb) as wb_url:
+        svc = post(wb_url, wb)
+        reval = tracking.revalidate_entry(d_obj, hand_dir, svc, archive_root=arch, index_path=idx_path)
+    assert reval["ok"] is True and reval["state"] == "ENTRY_REVALIDATED"
+    assert json.loads((hand_dir / "decision.json").read_text(encoding="utf-8"))["decided_at_ms"] == orig_decided_ms
+    assert json.loads((hand_dir / "tracking" / "link.json").read_text(encoding="utf-8"))["recorded_at_ms"] == orig_link_ms
+
+    p5_parsed = coord_mod.read_hand_p5_state(
+        dos, dossier_id=hand_dir.parent.parent.name, hand_id=hand_id, p5_episode_id=ep_dir.name
+    )
+    assert p5_parsed is not None
+    assert p5_parsed.entry_revalidated_at_ms == stale_now
+    assert p5_parsed.entry_revalidated_hand_id == hand_id
+
+    # Mismatched contract / hand identity on P5DecisionContract must fail freshness bridge
+    bad_hand_c = contracts.P5DecisionContract(
+        **{**p5_parsed.__dict__, "entry_revalidated_hand_id": "hand_other"}
+    )
+    assert policy.check_new_exposure_permission(
+        purpose="ADMIT",
+        p5_contract=bad_hand_c,
+        episode=None,
+        capital_auth=contracts.CapitalAuthorization(entry_armed=True, budget_cap_btc=D("0.5"), max_qty_btc=D("0.1")),
+        effective_budget_btc=D("0.5"),
+        writes_permitted=True,
+        now_ms=stale_now + 5_000,
+        config=contracts.ExecConfig(),
+        require_p5_facts=True,
+    ).allowed is False
+
+    bad_leg_c = contracts.P5DecisionContract(
+        **{**p5_parsed.__dict__, "short_instrument": "BTC-29NOV26-59000-P"}
+    )
+    assert policy.check_new_exposure_permission(
+        purpose="ADMIT",
+        p5_contract=bad_leg_c,
+        episode=None,
+        capital_auth=contracts.CapitalAuthorization(entry_armed=True, budget_cap_btc=D("0.5"), max_qty_btc=D("0.1")),
+        effective_budget_btc=D("0.5"),
+        writes_permitted=True,
+        now_ms=stale_now + 5_000,
+        config=contracts.ExecConfig(),
+        require_p5_facts=True,
+    ).allowed is False
+
+    # Revalidation itself expired (>180s) at ADMIT -> rejected
+    assert policy.check_new_exposure_permission(
+        purpose="ADMIT",
+        p5_contract=p5_parsed,
+        episode=None,
+        capital_auth=contracts.CapitalAuthorization(entry_armed=True, budget_cap_btc=D("0.5"), max_qty_btc=D("0.1")),
+        effective_budget_btc=D("0.5"),
+        writes_permitted=True,
+        now_ms=stale_now + 185_000,
+        config=contracts.ExecConfig(),
+        require_p5_facts=True,
+    ).allowed is False
+
+    # Revalidation expiring between ADMIT and EP pre-send check -> EP halted, 0 orders
+    venue_exp = _new_venue_from_p5_contract(cond, now_ms=stale_now + 179_000, spot_usd=spot)
+    st_exp, _adp_exp, coord_exp = _new_armed_coord(tmp_path / "e_exp", venue_exp, dos, qty_btc="0.1", slice_btc="0.1")
+    try:
+        orig_create = st_exp.create_episode
+        slipped = {"done": False}
+
+        def _slip_after_admit(ep_obj: Any) -> Any:
+            r = orig_create(ep_obj)
+            if not slipped["done"]:
+                slipped["done"] = True
+                venue_exp.advance_time(3_000)
+                exec_p2._refresh_books(venue_exp, short_inst, long_inst)
+            return r
+
+        monkeypatch.setattr(st_exp, "create_episode", _slip_after_admit)
+        monkeypatch.setattr(coord_exp, "_refresh_now_ms", lambda _cur, **_kw: venue_exp.server_time_ms)
+        coord_exp.run_tick(now_ms=venue_exp.server_time_ms)
+        coord_exp.run_tick(now_ms=venue_exp.server_time_ms)
+        ep_exp = st_exp.get_latest_episode()
+        assert ep_exp is not None and ep_exp.entry_halted is True and ep_exp.entry_closed is True
+        assert ep_exp.entry_halt_reason in {"DECISION_TIMESTAMP_OUT_OF_WINDOW", "LINK_TIMESTAMP_OUT_OF_WINDOW"}
+        assert ep_exp.entry_closure_reason == f"ABORTED_ZERO_FILL:{ep_exp.entry_halt_reason}"
+        assert st_exp.get_commands(ep_exp.episode_id) == []
+        assert venue_exp.export_raw_trades() == []
+    finally:
+        st_exp.close()
+
+    # Happy path with fresh ENTRY_REVALIDATED -> EP -> ES -> TP_MANAGED, then disarm prevents replay/spillover while keeping TP alive
+    venue_2 = _new_venue_from_p5_contract(cond, now_ms=stale_now + 5_000, spot_usd=spot)
+    st_2, _adp_2, coord_2 = _new_armed_coord(tmp_path / "e2", venue_2, dos, qty_btc="0.1", slice_btc="0.1")
+    try:
+        exec_p2._drive(coord_2, venue_2, short_inst, long_inst, n=4, dt_ms=50)
+        ep_2 = st_2.get_latest_episode()
+        assert ep_2 is not None and ep_2.phase == contracts.LifecyclePhase.TP_MANAGED
+        assert ep_2.entry_closure_reason == "FULL_TARGET_FILLED"
+        assert [c.purpose for c in st_2.get_commands(ep_2.episode_id)] == ["EP", "ES", "TP"]
+        assert st_2.has_consumed_hand(hand_id) is True
+
+        # Disarm entry_armed=False after entry_closed=True -> resting TP remains OPEN and no new hand can enter
+        disarm_res = coord_2.handle_capital_policy(
+            {"entry_armed": False, "budget_cap_btc": "0.50", "max_qty_btc": "0.1", "operator": "u6_disarm"},
+            now_ms=venue_2.server_time_ms,
+        )
+        assert disarm_res["entry_armed"] is False
+        assert any(c.purpose == "TP" and c.status == contracts.CommandStatus.OPEN for c in st_2.get_commands(ep_2.episode_id))
+
+        # Re-arming NEVER re-opens already-consumed hand even with ENTRY_REVALIDATED
+        tp_cmd = next(c for c in st_2.get_commands(ep_2.episode_id) if c.purpose == "TP" and c.status == contracts.CommandStatus.OPEN)
+        venue_2.fill_resting_order(tp_cmd.label, D("0.1"), price=tp_cmd.limit_price, liquidity="M")
+        exec_p2._drive(coord_2, venue_2, short_inst, long_inst, n=4, dt_ms=200)
+        assert st_2.get_episode(ep_2.episode_id).phase == contracts.LifecyclePhase.CASHFLOW_SETTLED
+        coord_2.handle_capital_policy(
+            {"entry_armed": True, "budget_cap_btc": "0.50", "max_qty_btc": "0.1", "operator": "u6_rearm"},
+            now_ms=venue_2.server_time_ms,
+            run_tick_after=True,
+        )
+        assert len(st_2.conn.execute("SELECT episode_id FROM episodes").fetchall()) == 1
+    finally:
+        st_2.close()
+
+    # 3) CONDITION_TRIGGERED / AI_REVOKE must reject revalidate_entry AND block ADMIT even with prior ENTRY_REVALIDATED
+    _seed_m1_trigger(wb, d_obj, ep_dir, clk, sync_fn)
+    with serving(wb) as wb_url:
+        svc = post(wb_url, wb)
+        reval_trig = tracking.revalidate_entry(d_obj, hand_dir, svc, archive_root=arch, index_path=idx_path)
+    assert reval_trig["ok"] is False and reval_trig["state"] == "REVALIDATE_REJECTED"
+    assert reval_trig["reason"] == "condition_triggered"
+
+    venue_3 = _new_venue_from_p5_contract(cond, now_ms=stale_now + 10_000, spot_usd=spot)
+    st_3, _adp_3, coord_3 = _new_armed_coord(tmp_path / "e3", venue_3, dos, qty_btc="0.1", slice_btc="0.1")
+    try:
+        out_3 = coord_3.run_tick(now_ms=venue_3.server_time_ms)
+        assert _reject_reason_from_tick(out_3, coord_3) == "P5_PRE_ENTRY_CONDITION_TRIGGERED"
+        assert st_3.get_latest_episode() is None and venue_3.export_raw_trades() == []
+    finally:
+        st_3.close()
+
+    _emit_real_p5_sync_open_review(wb, d_obj, ep_dir, arch, clk, sync_fn, reply_text=REVOKE_REPLY_TEXT)
+    venue_4 = _new_venue_from_p5_contract(cond, now_ms=stale_now + 12_000, spot_usd=spot)
+    st_4, _adp_4, coord_4 = _new_armed_coord(tmp_path / "e4", venue_4, dos, qty_btc="0.1", slice_btc="0.1")
+    try:
+        out_4 = coord_4.run_tick(now_ms=venue_4.server_time_ms)
+        assert _reject_reason_from_tick(out_4, coord_4) == "P5_ALREADY_REVOKED"
+        assert st_4.get_latest_episode() is None and venue_4.export_raw_trades() == []
+    finally:
+        st_4.close()
+
+
+def test_u6_cli_revalidate_entry_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("LLM_API_KEY", "k-u6cli")
+    monkeypatch.setenv("ASTRA_PLAYER_USAGE_LEDGER", str(tmp_path / "u6cli.json"))
+    slot_0, _exp_ms, spot, _rows, _cd = p5_e2e._nov26_27nov26_chain()
+    accept_put = p5_e2e._strict_p5_reply_text("## Accept / Put", short_strike=60_000, long_strike=58_000, require_outside_at_t0=True)
+    wb, _d, arch, dos, hand_dir, ep_dir, cond, clk, sync_fn, hand_id = _make_real_p5_accept(
+        tmp_path / "cli", monkeypatch, slot_0=slot_0, accept_put=accept_put, tag="u6cli"
+    )
+    stale_now = clk[0] + 20 * M
+    clk[0] = stale_now
+    sync_fn()
+    wb.refresh(now_ms=stale_now, record_daily=False)
+    entry_at_ms = int(json.loads((ep_dir / "condition.json").read_text(encoding="utf-8"))["entry_at_ms"])
+    idx_pts = [[t, float(spot)] for t in range((entry_at_ms // M + 1) * M, stale_now + 1, M)]
+    monkeypatch.setattr(dossier.archive.Deribit, "index_path", lambda _self: idx_pts)
+    monkeypatch.setenv("ASTRA_AI_SHADOW_LOCK_TOKEN", wb.config.shadow_service_token)
+    with serving(wb) as wb_url:
+        rc, out, _err = _run_tracking_cli(
+            monkeypatch,
+            capsys,
+            argv=[
+                "--url", wb_url,
+                "revalidate-entry",
+                "--root", str(dos),
+                "--dossier", hand_dir.parent.parent.name,
+                "--hand", hand_id,
+                "--archive", str(arch),
+            ],
+            clock_box=clk,
+        )
+    assert rc == 0 and isinstance(out, dict) and out["ok"] is True and out["state"] == "ENTRY_REVALIDATED"

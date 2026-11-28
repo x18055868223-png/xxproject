@@ -1195,6 +1195,7 @@ def _scan_episode_events(ev_dir: Path | None) -> dict[str, Any]:
     cond_triggered_at: int | None = None
     latest_valid_review_ts = 0
     latest_fail_ts = 0
+    entry_revalidations: list[tuple[int, str, Mapping[str, Any]]] = []
     events_readable = True
     read_error: str | None = None
 
@@ -1265,6 +1266,19 @@ def _scan_episode_events(ev_dir: Path | None) -> dict[str, Any]:
                         or 0
                     )
                     latest_fail_ts = max(latest_fail_ts, fail_ts)
+                elif kind == "ENTRY_REVALIDATED":
+                    rbody = ev.get("body")
+                    if not isinstance(rbody, Mapping):
+                        events_readable = False
+                        read_error = read_error or f"malformed_entry_revalidated:{p.name}"
+                        continue
+                    reval_ts = (
+                        _opt_int_ms(rbody.get("revalidated_at_ms"))
+                        or _opt_int_ms(ev.get("decided_at_ms"))
+                        or _opt_int_ms(ev.get("recorded_at_ms"))
+                        or 0
+                    )
+                    entry_revalidations.append((reval_ts, p.name, ev))
             except Exception as exc:
                 events_readable = False
                 read_error = read_error or f"event_parse_error:{p.name}:{exc}"
@@ -1294,6 +1308,7 @@ def _scan_episode_events(ev_dir: Path | None) -> dict[str, Any]:
         "condition_triggered": cond_triggered,
         "condition_triggered_at_ms": cond_triggered_at,
         "hold_review_llm_unavailable": hold_llm_unavail,
+        "entry_revalidations": entry_revalidations,
         "events_readable": events_readable,
         "read_error": read_error,
     }
@@ -1322,6 +1337,7 @@ def _degraded_contract_from_events(
             "condition_triggered": False,
             "condition_triggered_at_ms": None,
             "hold_review_llm_unavailable": False,
+            "entry_revalidations": [],
             "events_readable": False,
             "read_error": f"events_scan_failed:{exc}",
         }
@@ -1494,6 +1510,40 @@ def _parse_single_hand_contract(
     p5_ep_id = ep_dir.name
 
     ev_info = _scan_episode_events(ep_dir / "events")
+    expected_chash = compute_contract_hash(
+        dossier_id=dossier_dir.name,
+        hand_id=hand_dir.name,
+        p5_episode_id=p5_ep_id,
+        decision_sha256=dec_sha,
+        condition_sha256=cond_sha,
+        short_instrument=str(contract_map["short_instrument"]),
+        long_instrument=str(contract_map["long_instrument"]),
+        expiry_ms=expiry_ms,
+    )
+    matched_revals: list[tuple[int, str]] = []
+    for reval_ts, fname, ev in ev_info.get("entry_revalidations") or ():
+        rbody = ev.get("body") if isinstance(ev.get("body"), Mapping) else {}
+        if (
+            reval_ts > 0
+            and reval_ts >= max(decided_at_ms, link_recorded_at_ms)
+            and str(rbody.get("verdict") or "") == "VALID"
+            and str(rbody.get("dossier_id") or "") == dossier_dir.name
+            and str(rbody.get("hand_id") or "") == hand_dir.name
+            and str(rbody.get("episode_id") or "") == p5_ep_id
+            and str(rbody.get("short_instrument") or "") == str(contract_map["short_instrument"])
+            and str(rbody.get("long_instrument") or "") == str(contract_map["long_instrument"])
+            and _opt_int_ms(rbody.get("expiry_ms")) == expiry_ms
+            and str(rbody.get("decision_sha256") or "") == dec_sha
+            and str(rbody.get("condition_sha256") or "") == cond_sha
+        ):
+            matched_revals.append((reval_ts, fname))
+    best_reval_ts: int | None = None
+    best_reval_hand_id: str | None = None
+    best_reval_chash: str | None = None
+    if matched_revals:
+        best_reval_ts, _ = max(matched_revals, key=lambda item: (item[0], item[1]))
+        best_reval_hand_id = hand_dir.name
+        best_reval_chash = expected_chash
     sx_snap = _read_shadow_exit_snapshot(dossier_dir.parent.parent, dossier_dir.name, hand_dir.name)
     contract = P5DecisionContract(
         dossier_id=dossier_dir.name,
@@ -1522,6 +1572,9 @@ def _parse_single_hand_contract(
         condition_triggered=bool(ev_info["condition_triggered"]),
         condition_triggered_at_ms=ev_info["condition_triggered_at_ms"],
         hold_review_llm_unavailable=bool(ev_info["hold_review_llm_unavailable"]),
+        entry_revalidated_at_ms=best_reval_ts,
+        entry_revalidated_hand_id=best_reval_hand_id,
+        entry_revalidated_contract_hash=best_reval_chash,
         facts_readable=bool(ev_info["events_readable"]),
         read_error=ev_info["read_error"],
     )

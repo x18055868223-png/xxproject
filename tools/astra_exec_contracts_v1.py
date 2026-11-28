@@ -936,6 +936,9 @@ class P5DecisionContract:
     condition_triggered: bool = False
     condition_triggered_at_ms: int | None = None
     hold_review_llm_unavailable: bool = False
+    entry_revalidated_at_ms: int | None = None
+    entry_revalidated_hand_id: str | None = None
+    entry_revalidated_contract_hash: str | None = None
     facts_readable: bool = True
     read_error: str | None = None
 
